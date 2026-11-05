@@ -2555,7 +2555,7 @@ mod readme_media {
     fn render_readme_media() {
         let gpu = gpu::test_gpu();
         std::fs::create_dir_all("shots/anim").unwrap();
-        let picks = [("Campfire", 30u32), ("Mushroom Cloud", 60), ("Magic Portal", 90), ("Spirit Swirl", 90), ("Gas Burner", 30), ("Ground Explosion", 0)];
+        let picks = [("Campfire", 30u32), ("Mushroom Cloud", 60), ("Nebula", 90), ("Toxic Cloud", 60), ("Gas Burner", 30), ("Ground Explosion", 0)];
         for (k, (name, start)) in picks.iter().enumerate() {
             let i = presets::PRESETS.iter().position(|p| p.name == *name).unwrap();
             let mut g = Graph::default();

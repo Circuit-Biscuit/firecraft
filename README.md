@@ -14,11 +14,11 @@ A real-time volumetric effects tool, built in pure Rust for Windows, macOS and L
 [![Status](https://img.shields.io/badge/status-alpha-orange)](#feature-status)
 [![Release](https://img.shields.io/badge/releases-automatic-2ea44f)](#releasing-a-new-version)
 
-<img src="docs/preview.gif" width="100%" alt="Six FireCraft presets simulating live: campfire, mushroom cloud, magic portal, spirit swirl, gas burner and a ground explosion">
+<img src="docs/preview.gif" width="100%" alt="Six FireCraft presets simulating live: campfire, mushroom cloud, nebula, toxic cloud, gas burner and a ground explosion">
 
-<sub><i>Six built-in presets simulating in real time — campfire, mushroom cloud, magic portal, spirit swirl, gas burner, ground explosion. Every frame is a live 3D fluid simulation, not a sprite.</i></sub>
+<sub><i>Six built-in presets simulating in real time — campfire, mushroom cloud, nebula, toxic cloud, gas burner, ground explosion. Every frame is a live 3D fluid simulation, not a sprite.</i></sub>
 
-[Simulate](#simulate-fire-the-way-it-actually-moves) · [Nodes](#a-node-graph-for-every-part-of-the-effect) · [Presets](#44-presets-no-two-alike) · [Render](#render-quality-that-holds-up-close) · [Export](#export) · [Downloads](#downloads) · [Build](#quick-start) · [Release](#releasing-a-new-version)
+[Simulate](#simulate-fire-the-way-it-actually-moves) · [Nodes](#a-node-graph-for-every-part-of-the-effect) · [Settings](#every-setting-in-its-own-tab) · [Presets](#44-presets-no-two-alike) · [Render](#render-quality-that-holds-up-close) · [Export](#export) · [Downloads](#downloads) · [Build](#quick-start) · [Release](#releasing-a-new-version) · [Changelog](CHANGELOG.md)
 
 </div>
 
@@ -32,12 +32,13 @@ A real-time volumetric effects tool, built in pure Rust for Windows, macOS and L
 
 FireCraft runs a full 3D fluid solver on the graphics card every frame. Fuel burns, hot gas rises, smoke billows and cools — you change a setting and watch the effect respond immediately.
 
-- **Real combustion** — emitters release fuel and heat; fuel ignites smoothly above its ignition temperature, burns into heat and smoke, and cools as it rises.
+- **Real combustion**: emitters release fuel and heat. Fuel ignites smoothly above its ignition temperature and burns into heat, smoke and *flames*, and the flames fade as the gas cools. You choose how much of each it makes, the burn rate, the ignition temperature and the expansion.
 - **Sharp, stable flames** — a staggered (MAC) grid, midpoint back-tracing and a red-black SOR + Gauss-Seidel pressure solve keep flame sheets crisp and free of grain, even at 36 million cells.
 - **Turbulence that folds, not shreds** — curl-noise forces swirl the gas into sheets and tongues; the strength fades smoothly around the effect so edges never break up into noise.
-- **Detail on tap** — Low · Medium · High · Ultra grids (up to 288 × 432 × 288), and a *Domain size* setting that wraps the grid tightly around your effect.
+- **Detail on tap**: set the voxel count and the voxel size in centimetres, and move the bounds to wrap the grid tightly around your effect. Grids go up to 48 million voxels, and the app keeps the grid inside what your graphics card can hold.
+- **Physical controls**: dissipation (multiplicative and subtractive) and diffusion for each channel. Vorticity with velocity, temperature and smoke masks. Buoyancy, smoke and fuel weight, gravity, solid walls on any side, wind with chaos, shredding, and a domain mask.
 - **Open boundaries** — gas leaves the simulated space and fades out softly; nothing piles into a box.
-- **Substeps** for very fast or very swirly effects, **colliders** for walls, ceilings, pillars and pipes, and **wind** that settles at the speed you set.
+- **Time control**: timestep, substeps, freeze and looping. **Projection quality**: Low, Medium, High, Ultra or Custom. **Advection**: first, second or third order. **Colliders** for walls, ceilings, pillars and pipes.
 
 ## A node graph for every part of the effect
 
@@ -62,6 +63,29 @@ Right-click the graph for the full library — searchable, grouped like a pro to
 
 Everything you expect from a desktop app is there: **undo / redo**, cut / copy / paste / duplicate nodes, multi-select and box select, right-click menus on nodes, settings, viewport and timeline, favourites and randomise for settings, and projects you can save, reopen and double-click.
 
+## Every setting in its own tab
+
+<a href="docs/screenshot-shading.png"><img src="docs/screenshot-shading.png" width="100%" alt="Shading node, Flames tab, with a live temperature histogram"></a>
+
+<sub><i>The Shading node's Flames tab: a live histogram of temperatures in the simulation, beside the colour remap range it controls.</i></sub>
+
+Each node shows its settings in tabs, just like the big tools do. Advanced settings stay hidden until you need them, and settings that don't apply are hidden too.
+
+| Node | Tabs |
+|---|---|
+| **Simulation** | Domain · Simulation · Time Control · Projection · Combustion · Dissipation · Diffusion · Vorticity · Force · Wind · Shredding · Mask · Visual · Particles |
+| **Emitter** | Activity · Transform (with rotation) · Emission · Pressure (with random pressure) · Forces (transfers the emitter's own motion) · Visuals (can emit light) |
+| **Forces** | General · Transform · Masking (temperature, smoke and velocity masks with ranges) · Visual (arrows in the viewport) |
+| **Shading** | Lighting · Scattering · Emissive masking · Flames · Smoke · Fuel · Rendering, with live temperature and smoke histograms |
+| **Fire Color Gradient** | Gradient editor with RGB, Linear, HSV or OKLab blending; import and export `.fcgrad` files or a PNG strip |
+| **Scene** | Tonemapping · Colors (bloom, swizzle) · Vignetting · Style |
+| **Volume Processing** | Post process (motion blur, sharpen, dilate) · Post modulation · Slicing mask |
+| **Render** | Render Passes · Export · Render Settings |
+
+<a href="docs/screenshot-forces.png"><img src="docs/screenshot-forces.png" width="100%" alt="Fire Chaos noise force with its arrows drawn in the viewport"></a>
+
+<sub><i>Select a force and its field appears as arrows in the viewport. This is the Fire Chaos curl noise, with scale, seed, octaves, lacunarity, gain, amplitude and bias.</i></sub>
+
 ## 44 presets, no two alike
 
 <a href="docs/screenshot-presets.png"><img src="docs/screenshot-presets.png" width="100%" alt="The preset gallery"></a>
@@ -72,21 +96,28 @@ Candle flame · wildfire line · fire ring · fire tornado · burning wall · oi
 
 ## Render quality that holds up close
 
-<a href="docs/screenshot-portal.png"><img src="docs/screenshot-portal.png" width="100%" alt="Magic Portal preset"></a>
+<a href="docs/screenshot-nebula.png"><img src="docs/screenshot-nebula.png" width="100%" alt="Nebula preset"></a>
 
-<sub><i>Magic Portal: a torus emitter spun by a Vector Field node, coloured by a purple gradient.</i></sub>
+<sub><i>Nebula: glowing gas swirled by a noise force and lit by a point light.</i></sub>
 
 - **GPU ray marching** through a hardware-filtered 3D texture, at full screen resolution, with empty-space skipping.
 - **Emission + absorption** shading with self-shadowing smoke, ambient, directional and point lights, skybox and ground.
 - **Low-noise sampling** — interleaved-gradient jitter averaged over frames; pause and **HQ mode** (Ctrl+3) refines the frame over up to 256 passes for clean stills.
-- **Render Quality** Low · Medium · High, Lit / Unlit, perspective or orthographic, emitter gizmos and an axis widget.
+- **Flames shaping**: flames are drawn where fuel actually burns, so they come out as crisp sheets with dark gaps rather than a glowing ball. Glow from the flames lights up the smoke nearby.
+- **Finishing**: Uchimura, ACES, Filmic, AgX or Reinhard tonemapping; bloom; exposure, gamma, contrast, saturation and vibrance; vignette; dithering.
+- **Ten styles**: Realistic, Pixelized, Edge, Chromatic Aberration, Kuwahara, Anisotropic Kuwahara and four stroke styles, with quantisation.
+- **Render Quality**: Low, Medium or High; Lit or Unlit; perspective or orthographic; emitter and force gizmos; an axis widget.
 
 ## Export
 
-- **Image sequence** — one PNG per frame at any size.
-- **Flipbook** — every frame tiled into one sprite sheet, ready for game engines.
+<a href="docs/screenshot-export.png"><img src="docs/screenshot-export.png" width="100%" alt="Render node Export tab with the flipbook grid"></a>
+
+- **Render passes**: Render All, Alpha, Emission, Scattering, Temperature, Density, Fuel or Depth. Each is written as RGBA, RGB or a single channel, and can be HDR.
+- **PNG, EXR (HDR floats) or TGA**, with filename patterns such as `$(project)_$(safename)`.
+- **Image sequence**: one file per frame at any size, with first frame, frame count, stride, a numbering offset and absolute frame numbers.
+- **Flipbook**: every frame tiled into one sprite sheet, ready for game engines. You set the columns and rows on a visual grid.
 - **Volume** — density, temperature and fuel as 3D grids (`.vol`), and back in through the Import node.
-- Export from the **Export tab** or from **Export nodes** in the graph; exports run frame by frame without freezing the app.
+- Export with **Export Now** on the Render node, from the **Export tab**, or from **Export nodes** in the graph. Exports run frame by frame without freezing the app, and **Open Folder** takes you to the files.
 
 ## Fast, native, yours
 
@@ -103,7 +134,10 @@ Candle flame · wildfire line · fire ring · fire tornado · burning wall · oi
 | Viewport, lighting, shadows, HQ refinement | ✅ |
 | Presets (44, pre-rendered pictures) | ✅ |
 | Undo / redo, clipboard, project files | ✅ |
-| Image sequence · flipbook · `.vol` volume export, volume import | ✅ |
+| Full node settings (tabs, advanced settings, gradients, histograms, force gizmos) | ✅ |
+| Tonemapping, bloom, vignette, render styles, render passes | ✅ |
+| Image sequence · flipbook (PNG · EXR · TGA) · `.vol` volume export, volume import | ✅ |
+| *Import control* and *Force Tightness* settings | ⬜ shown, not yet active |
 | Windows installer · macOS universal app · Linux AppImage, automatic releases | ✅ |
 | MIDI modulator | ✅ Windows · ⬜ macOS / Linux |
 | OpenVDB (`.vdb`) export | ⬜ (`.vol` for now) |
@@ -172,7 +206,8 @@ cargo run --release -- --screenshot out.png  # render ~120 frames, save the wind
 | App, panels, menus | `src/main.rs` | eframe / egui UI, viewport, timeline, exports, undo, shortcuts |
 | Node graph | `src/graph.rs` | node library, ports and wiring, settings panel, project files |
 | Simulation | `src/sim.wgsl`, `src/gpu.rs` | GPU compute: MAC-grid fluid, combustion, forces, colliders, pressure solve |
-| Rendering | `src/render.wgsl` | GPU ray marcher with shadows, lights, sparks, temporal refinement |
+| Rendering | `src/render.wgsl`, `src/post.wgsl` | GPU ray marcher with shadows, lights and sparks; bloom, tonemapping, styles and passes |
+| Setting widgets | `src/widgets.rs`, `src/noise.rs` | gradient editor, render passes, histograms, noise preview, export helpers |
 | Presets | `src/presets.rs`, `assets/presets/` | preset graphs and their pre-rendered pictures |
 | Modulators | `src/modulate.rs` | values over time and MIDI input |
 | Home screen | `src/home.rs` | presets gallery, recent projects |
@@ -188,7 +223,7 @@ Releases are automatic. Bump the version and push:
 powershell -ExecutionPolicy Bypass -File scripts\bump.ps1 0.5.0
 ```
 
-(or edit `version` in `Cargo.toml` and push to `main`). The **Release** workflow notices the new version, builds the Windows installer, the macOS universal `.dmg` and the Linux AppImage, and publishes them as release `v0.5.0` with checksums — about 15 minutes. Pushes that don't change the version are built and tested by **CI** on all three platforms but not released.
+(or edit `version` in `Cargo.toml` and push to `main`). First add a `## [0.5.0]` section to [CHANGELOG.md](CHANGELOG.md): it becomes the release notes. The **Release** workflow notices the new version, builds the Windows installer, the macOS universal `.dmg` and the Linux AppImage, and publishes them as release `v0.5.0` with checksums — about 15 minutes. Pushes that don't change the version are built and tested by **CI** on all three platforms but not released.
 
 First-time setup of the repository is a single command: `scripts\publish.ps1` (creates the private repository under the organization and pushes).
 

@@ -2,6 +2,31 @@
 
 All notable changes to FireCraft. Each release on GitHub shows the section for its version.
 
+## [0.5.1] - 2026-11-05
+
+The smooth, flowing fire from 0.4 is back. Simulation bounds are now easy to set.
+
+### Added
+
+- **Editable simulation bounds**:
+  - Select the Simulation node and its box appears in the viewport. Drag the coloured dot on any face to move that side.
+  - *Bounds size* in metres is on the Domain tab.
+  - *Edit simulation bounds* is in the Simulation menu and the viewport's right-click menu.
+
+### Changed
+
+- The 0.4 look is the default again. New defaults:
+  - Plain ACES tonemapping, with no bloom, no raymarch sharpening and no flame shaping.
+  - No vorticity or temperature diffusion.
+  - A single-octave noise.
+  - A 25% hourglass filter on the reused pressure solve.
+- Changing the grid size restarts the simulation only when you let go of the mouse.
+- Preset pictures, README screenshots and the preview GIF were re-rendered.
+
+### Fixed
+
+- Removed the fine dotted grain in thin flames and smoke.
+
 ## [0.5.0] - 2026-11-05
 
 Every node now has the full set of settings, organised in tabs like a professional tool.
@@ -35,20 +60,11 @@ Every node now has the full set of settings, organised in tabs like a profession
   - **Export**: flipbook or image sequence with sizes and a visual grid editor; first frame, frame count, stride, numbering offset and absolute frame numbers; filename patterns such as `$(project)_$(safename)`; **PNG, EXR and TGA**; *Export Now* and *Open Folder*.
   - **Render Settings**: alpha blending mode, inverted alpha, shape rendering and masking, and occlusion between particles and volume.
 - The viewport overlay shows **Projection Quality**. The orthographic camera moved to the *View* menu.
-- **Editable simulation bounds**:
-  - With the Simulation node selected, the box appears in the viewport. Drag the coloured dot on any face to move that side.
-  - *Bounds size* in metres is on the Domain tab.
-  - *Edit simulation bounds* is in the Simulation menu and the viewport's right-click menu.
 
 ### Changed
 
-- The smooth, flowing 0.4 look is the default again. New defaults:
-  - Plain ACES tonemapping, with no bloom, no raymarch sharpening and no flame shaping.
-  - No vorticity or temperature diffusion.
-  - A single-octave noise.
-  - A 25% hourglass filter on the reused pressure solve, which removes the fine dotted grain.
-- Flames now fade as the gas cools.
-- Changing the grid size restarts the simulation only when you let go of the mouse.
+- New bloom and tonemapping give a cleaner fire. The core no longer burns out to white, and there is no glow halo.
+- Flames now fade as the gas cools, so the default fire is compact and no longer trails a red cloud.
 - All 44 preset pictures were re-rendered with the new engine.
 - Projects and presets from 0.4 still open. Old setting names are translated to the new ones automatically.
 

@@ -223,7 +223,7 @@ Releases are automatic. Bump the version and push:
 powershell -ExecutionPolicy Bypass -File scripts\bump.ps1 0.5.0
 ```
 
-(or edit `version` in `Cargo.toml` and push to `main`). First add a `## [0.5.0]` section to [CHANGELOG.md](CHANGELOG.md): it becomes the release notes. The **Release** workflow notices the new version, builds the Windows installer, the macOS universal `.dmg` and the Linux AppImage, and publishes them as release `v0.5.0` with checksums — about 15 minutes. Pushes that don't change the version are built and tested by **CI** on all three platforms but not released.
+(or edit `version` in `Cargo.toml` and push to `main`). First add a `## [0.5.1]` section to [CHANGELOG.md](CHANGELOG.md): it becomes the release notes. The **Release** workflow notices the new version, builds the Windows installer, the macOS universal `.dmg` and the Linux AppImage, and publishes them as release `v0.5.1` with checksums — about 15 minutes. Pushes that don't change the version are built and tested by **CI** on all three platforms but not released.
 
 First-time setup of the repository is a single command: `scripts\publish.ps1` (creates the private repository under the organization and pushes).
 

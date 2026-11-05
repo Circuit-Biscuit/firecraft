@@ -5,6 +5,37 @@ pub const AMBIENT_K: f32 = 300.0;
 pub const FPS: f32 = 60.0;
 
 pub type V3 = [f32; 3];
+/// Rotation matrix (rows). Identity = no rotation (the 0.4 behaviour).
+pub type M3 = [V3; 3];
+pub const IDENTITY: M3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// Rotation from UI angles in degrees (X, Y, Z-up; applied X, then Y, then Z) as a sim-axes matrix.
+pub fn rotation_ui(deg: V3) -> M3 {
+    if deg == [0.0; 3] {
+        return IDENTITY;
+    }
+    let (x, y, z) = (deg[0].to_radians(), deg[1].to_radians(), deg[2].to_radians());
+    let rx = [[1.0, 0.0, 0.0], [0.0, x.cos(), -x.sin()], [0.0, x.sin(), x.cos()]];
+    let ry = [[y.cos(), 0.0, y.sin()], [0.0, 1.0, 0.0], [-y.sin(), 0.0, y.cos()]];
+    let rz = [[z.cos(), -z.sin(), 0.0], [z.sin(), z.cos(), 0.0], [0.0, 0.0, 1.0]];
+    let ui = mat_mul(&rz, &mat_mul(&ry, &rx));
+    // UI (x, y, z-up) -> sim (x, up, -y): S * R * S^-1
+    let s: M3 = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+    let si: M3 = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]];
+    mat_mul(&s, &mat_mul(&ui, &si))
+}
+
+pub fn mat_mul(a: &M3, b: &M3) -> M3 {
+    std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()))
+}
+
+pub fn mat_apply(a: &M3, v: V3) -> V3 {
+    std::array::from_fn(|i| a[i][0] * v[0] + a[i][1] * v[1] + a[i][2] * v[2])
+}
+
+pub fn transpose(a: &M3) -> M3 {
+    std::array::from_fn(|i| std::array::from_fn(|j| a[j][i]))
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Shape {
@@ -19,6 +50,18 @@ pub struct Chaos {
     pub strength: f32,
     pub scale: f32,
     pub speed: f32,
+    /// Added after 0.4 (Force: Noise into an emitter): octaves, lacunarity, gain (1 octave = 0.4),
+    /// and an offset in noise space from the seed (zero at the default seed).
+    pub octaves: f32,
+    pub lacunarity: f32,
+    pub gain: f32,
+    pub seed_off: V3,
+}
+
+impl Chaos {
+    pub fn simple(strength: f32, scale: f32, speed: f32) -> Self {
+        Chaos { strength, scale, speed, octaves: 1.0, lacunarity: 2.0, gain: 0.5, seed_off: [0.0; 3] }
+    }
 }
 
 /// Expanding shell (Shape: Burst).
@@ -43,11 +86,13 @@ pub struct ShapeInst {
     pub burst: Option<Burst>,
     pub wander: f32, // m/s of random drift (Shape: Particles)
     pub seed: f32,
+    /// Orientation (Shape and Emitter Rotation); identity = 0.4.
+    pub rot: M3,
 }
 
 impl ShapeInst {
     pub fn sphere(center: V3, r: f32) -> Self {
-        ShapeInst { kind: Shape::Sphere, center, half: [r; 3], torus: 0.3, hollow: 0.0, gradient: None, noise: None, burst: None, wander: 0.0, seed: 0.0 }
+        ShapeInst { kind: Shape::Sphere, center, half: [r; 3], torus: 0.3, hollow: 0.0, gradient: None, noise: None, burst: None, wander: 0.0, seed: 0.0, rot: IDENTITY }
     }
 }
 
@@ -83,6 +128,10 @@ pub struct Emitter {
     pub burst: f32, // seconds of emission per cycle (0 = continuous)
     pub gap: f32,   // seconds between bursts
     pub chaos: Option<Chaos>,
+    /// Pressure random: intensity (0..1), scale (m), seed, speed. Only acts with a pressure push.
+    pub pressure_noise: [f32; 4],
+    /// The emitter's shapes block the sun (Shadow caster).
+    pub shadow_caster: bool,
 }
 
 /// Force nodes. `kind`: 0 line, 1 point, 2 toroidal, 3 noise, 4 vector field, 5 vorticles.
@@ -98,6 +147,18 @@ pub struct Force {
     pub extra: f32,
     pub mask: Option<ShapeInst>,
     pub softness: f32,
+    /// Added after 0.4 (defaults reproduce 0.4): noise octaves, lacunarity, gain, curl (1/0);
+    /// bias; offset in noise space from the seed; field rotation; acts on volume (0), particles (1), both (2).
+    pub noise: [f32; 4],
+    pub bias: V3,
+    pub seed_off: V3,
+    pub rot: M3,
+    pub mode: u32,
+    /// Field masks: constant, velocity, temperature, smoke (0..1), and their ranges
+    /// (temperature K min/max, smoke min/max). `masks_04`: the 0.4 masking (noise: heat, others: none).
+    pub masks: [f32; 4],
+    pub ranges: [f32; 4],
+    pub masks_04: bool,
 }
 
 #[derive(Clone)]

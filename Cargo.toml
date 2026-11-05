@@ -7,7 +7,7 @@ authors = ["Circuit Biscuit"]
 
 [dependencies]
 eframe = { version = "0.31", features = ["wgpu"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "tga", "exr"] }
 rfd = "0.17"
 
 [profile.dev]

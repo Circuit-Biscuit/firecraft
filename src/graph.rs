@@ -270,20 +270,50 @@ impl Kind {
     fn params(self) -> Vec<Param> {
         use Val::*;
         const SHAPES: &[&str] = &["Sphere", "Box", "Cylinder", "Torus"];
-        const MODE: &[&str] = &["Add", "Replace"];
         const RES: &[&str] = &["Low", "Medium", "High", "Ultra"];
+        const MODE: &[&str] = &["Add", "Replace"];
         const WAVES: &[&str] = &["Sine", "Square", "Triangle", "Saw"];
         const OPS: &[&str] = &["Add", "Subtract", "Multiply", "Divide", "Min", "Max", "Power"];
         const FIELDS: &[&str] = &["Push out", "Pull in", "Swirl", "Updraft"];
         const MIDI: &[&str] = &["Control change", "Note velocity"];
-        let mask = |v: &mut Vec<Param>| v.push(f("Mask", "Mask softness", 0.3, 0.0, 1.0, ""));
+        const ZERO: &[&str] = &["Center", "Min", "Max"];
+        const FMODE: &[&str] = &["Volume", "Particles", "Volume And Particles"];
+        const ONOFF: &[&str] = &["No", "Yes"];
+        let _ = ONOFF;
+        // shared by every force: activity, mode, rotation, field masks and the viewport gizmo
+        let force_common = |v_: &mut Vec<Param>, constant: f32, temperature: f32| {
+            v_.insert(0, p("General", "Mode", Ch(0), FMODE));
+            v_.insert(0, b("General", "Show Force Mask", false));
+            v_.insert(0, b("General", "Tether Mask Shapes", false));
+            v_.insert(0, b("General", "Force activity", true));
+            if !v_.iter().any(|q| q.name == "Position") {
+                v_.push(v("Transform", "Position", [0.0, 0.0, 0.0], -4.0, 4.0, "m"));
+            }
+            v_.push(b("Transform", "Import control", false));
+            v_.push(v("Transform", "Rotation", [0.0, 0.0, 0.0], -180.0, 180.0, "°"));
+            v_.push(f("Masking", "Constant mask", constant, 0.0, 100.0, "%"));
+            v_.push(f("Masking", "Velocity mask", 0.0, 0.0, 100.0, "%"));
+            v_.push(f("Masking", "Temperature mask", temperature, 0.0, 100.0, "%"));
+            v_.push(f("Masking", "Smoke mask", 0.0, 0.0, 100.0, "%"));
+            v_.push(r("Masking", "Smoke Range", [0.0, 300.0], (0.0, 1000.0), "%"));
+            v_.push(r("Masking", "Temperature Range", [0.0, 10000.0], (0.0, 10000.0), "K"));
+            v_.push(f("Masking", "Mask softness", 0.3, 0.0, 1.0, ""));
+            v_.push(b("Visual", "Enable gizmo", true));
+            v_.push(p("Visual", "Visual mode", Ch(0), &["3D Grid", "Slice"]));
+            v_.push(p("Visual", "Arrow type", Ch(0), &["Arrow", "Line"]));
+            v_.push(f("Visual", "Density", 0.66, 0.1, 1.0, ""));
+        };
         match self {
             Kind::ShapePrimitive => vec![
-                p("Shape", "Shape type", Ch(0), SHAPES),
-                f("Shape", "Size", 0.24, 0.02, 4.0, "m"),
-                v("Shape", "Scale", [1.0, 1.0, 1.0], 0.05, 10.0, ""),
-                f("Shape", "Torus thickness", 0.3, 0.05, 1.0, ""),
+                b("General", "Shape Activity", true),
+                p("General", "Shape type", Ch(0), SHAPES).lab("Type"),
+                f("General", "Size", 0.24, 0.02, 4.0, "m").lab("Radius"),
+                v("General", "Scale", [1.0, 1.0, 1.0], 0.05, 10.0, ""),
+                f("General", "Torus thickness", 0.3, 0.05, 1.0, "").when("Shape type", 3),
+                b("General", "Fill motion gaps", false),
+                b("Transform", "Import control", false),
                 v("Transform", "Position", [0.0, 0.0, 0.0], -4.0, 4.0, "m"),
+                v("Transform", "Rotation", [0.0, 0.0, 0.0], -180.0, 180.0, "°"),
             ],
             Kind::ShapeBurst => vec![
                 f("Burst", "Final radius", 0.8, 0.05, 6.0, "m"),
@@ -293,11 +323,11 @@ impl Kind {
                 v("Transform", "Position", [0.0, 0.0, 0.0], -4.0, 4.0, "m"),
             ],
             Kind::ShapeParticles => vec![
-                f("Particles", "Count", 8.0, 1.0, 24.0, ""),
+                f("Particles", "Count", 8.0, 1.0, 24.0, "").int(),
                 f("Particles", "Spread", 0.4, 0.0, 4.0, "m"),
                 f("Particles", "Particle size", 0.06, 0.01, 1.0, "m"),
                 f("Particles", "Wander", 0.3, 0.0, 3.0, "m/s"),
-                f("Particles", "Seed", 1.0, 0.0, 999.0, ""),
+                f("Particles", "Seed", 1.0, 0.0, 999.0, "").int(),
                 v("Transform", "Position", [0.0, 0.0, 0.0], -4.0, 4.0, "m"),
             ],
             Kind::ShapeNoise => vec![f("Noise", "Strength", 0.7, 0.0, 1.0, ""), f("Noise", "Scale", 1.0, 0.1, 8.0, ""), f("Noise", "Speed", 1.0, 0.0, 8.0, "")],
@@ -308,14 +338,16 @@ impl Kind {
             Kind::ShapeBlend => vec![p("Blend", "Mode", Ch(0), &["Union (both shapes)", "A only", "B only"])],
             Kind::ShapeModifier => vec![
                 f("Modifier", "Hollow", 0.0, 0.0, 0.95, ""),
-                f("Modifier", "Size multiplier", 1.0, 0.05, 10.0, ""),
+                f("Modifier", "Size multiplier", 1.0, 0.05, 30.0, ""),
                 f("Modifier", "Edge softness", 15.0, 0.0, 50.0, ""),
             ],
             Kind::Emitter => vec![
                 b("Activity", "Emitter activity", true),
                 f("Activity", "Duration of burst", 0.5, 0.0, 10.0, "s"),
                 f("Activity", "Time between bursts", 0.0, 0.0, 100.0, "s"),
+                b("Transform", "Import control", false),
                 v("Transform", "Position", [0.0, 0.0, 0.0], -4.0, 4.0, "m"),
+                v("Transform", "Rotation", [0.0, 0.0, 0.0], -180.0, 180.0, "°"),
                 p("Emission", "Fuel emission", Ch(0), MODE),
                 f("Emission", "Fuel rate", 250.0, 0.0, 1000.0, "%/s"),
                 p("Emission", "Smoke emission", Ch(0), MODE),
@@ -323,22 +355,31 @@ impl Kind {
                 p("Emission", "Temperature emission", Ch(1), MODE),
                 f("Emission", "Temperature", 4100.0, 300.0, 6000.0, "K"),
                 f("Emission", "Emission gradient", 15.0, 0.0, 50.0, ""),
-                f("Pressure", "Expansion", 0.0, 0.0, 5.0, ""),
-                v("Forces", "Initial velocity", [0.0, 0.0, 1.0], -10.0, 10.0, "m/s"),
+                f("Pressure", "Additional pressure rate", 0.0, 0.0, 1000.0, "%/s"),
+                f("Pressure", "Pressure random intensity", 0.0, 0.0, 100.0, "%"),
+                f("Pressure", "Pressure random scale", 0.1, 0.01, 2.0, "m"),
+                f("Pressure", "Pressure random seed", 0.0, 0.0, 999.0, "").int(),
+                f("Pressure", "Pressure random speed", 0.0, 0.0, 10.0, ""),
+                f("Forces", "Velocity transfer", 100.0, 0.0, 200.0, "%"),
+                v("Forces", "Initial velocity", [0.0, 0.0, 1.0], -25.0, 25.0, "m/s"),
                 f("Forces", "Velocity spread", 1.0, 0.0, 3.0, ""),
-                b("Visuals", "Show shape", true),
-                c("Visuals", "Shape color", [0.95, 0.2, 0.25]),
+                b("Visuals", "Show emitter", false),
+                b("Visuals", "Shadow caster", false),
+                c("Visuals", "Emitter color", [0.5, 0.5, 0.5]),
+                b("Visuals", "Emit light", true),
+                c("Visuals", "Emissive light color", [0.55, 0.5, 1.0]),
+                f("Visuals", "Emissive light intensity", 0.0, 0.0, 20.0, ""),
             ],
             Kind::EmitterParticles => vec![
                 b("Activity", "Emitter activity", true),
-                f("Particles", "Count", 12.0, 1.0, 24.0, ""),
+                f("Particles", "Count", 12.0, 1.0, 24.0, "").int(),
                 f("Particles", "Lifetime", 1.2, 0.05, 10.0, "s"),
                 f("Particles", "Speed", 2.0, 0.0, 20.0, "m/s"),
                 f("Particles", "Spread angle", 35.0, 0.0, 180.0, "°"),
                 v("Particles", "Direction", [0.0, 0.0, 1.0], -1.0, 1.0, ""),
                 f("Particles", "Gravity", -2.0, -20.0, 20.0, "m/s²"),
                 f("Particles", "Particle size", 0.05, 0.01, 0.5, "m"),
-                f("Particles", "Seed", 1.0, 0.0, 999.0, ""),
+                f("Particles", "Seed", 1.0, 0.0, 999.0, "").int(),
                 v("Transform", "Position", [0.0, 0.0, 0.0], -4.0, 4.0, "m"),
                 f("Emission", "Fuel rate", 400.0, 0.0, 1000.0, "%/s"),
                 f("Emission", "Smoke rate", 0.0, 0.0, 1000.0, "%/s"),
@@ -349,7 +390,7 @@ impl Kind {
             Kind::Collider => vec![b("Collider", "Solid", true)],
             Kind::ForceLine => {
                 let mut v_ = vec![f("Force", "Strength", 1.0, -20.0, 20.0, ""), v("Force", "Direction", [0.0, 1.0, 0.0], -1.0, 1.0, "")];
-                mask(&mut v_);
+                force_common(&mut v_, 100.0, 0.0);
                 v_
             }
             Kind::ForceToroidal => {
@@ -360,21 +401,32 @@ impl Kind {
                     v("Force", "Axis", [0.0, 0.0, 1.0], -1.0, 1.0, ""),
                     v("Transform", "Position", [0.0, 0.0, 0.3], -4.0, 4.0, "m"),
                 ];
-                mask(&mut v_);
+                force_common(&mut v_, 100.0, 0.0);
                 v_
             }
             Kind::ForceNoise => {
-                let mut v_ = vec![f("Chaos", "Strength", 2.0, 0.0, 8.0, ""), f("Chaos", "Scale", 1.0, 0.1, 6.0, ""), f("Chaos", "Speed", 1.0, 0.0, 6.0, "")];
-                mask(&mut v_);
+                let mut v_ = vec![
+                    f("General", "Scale", 25.0, 1.0, 400.0, "cm"),
+                    f("General", "Seed", 330.0, 0.0, 9999.0, "").int(),
+                    f("General", "Octaves", 1.0, 1.0, 8.0, "").int(),
+                    f("General", "Lacunarity", 2.0, 1.0, 4.0, ""),
+                    f("General", "Gain", 0.5, 0.0, 1.0, ""),
+                    f("General", "Amplitude", 19.333, 0.0, 200.0, ""),
+                    v("General", "Bias", [0.0, 0.0, 0.0], -50.0, 50.0, ""),
+                    f("General", "Animation speed", 2.0, 0.0, 20.0, ""),
+                    b("General", "Curl noise", true),
+                    ui("General", "Noise force preview", "noise_preview"),
+                ];
+                force_common(&mut v_, 0.0, 100.0);
                 v_
             }
             Kind::ForcePoint => {
                 let mut v_ = vec![
-                    f("Force", "Strength", -3.0, -20.0, 20.0, ""),
+                    f("Force", "Strength", -3.0, -50.0, 50.0, ""),
                     f("Force", "Radius", 0.6, 0.02, 6.0, "m"),
                     v("Transform", "Position", [0.0, 0.0, 0.6], -4.0, 4.0, "m"),
                 ];
-                mask(&mut v_);
+                force_common(&mut v_, 100.0, 0.0);
                 v_
             }
             Kind::ForceVectorField => {
@@ -385,7 +437,7 @@ impl Kind {
                     v("Field", "Axis", [0.0, 0.0, 1.0], -1.0, 1.0, ""),
                     v("Transform", "Position", [0.0, 0.0, 0.4], -4.0, 4.0, "m"),
                 ];
-                mask(&mut v_);
+                force_common(&mut v_, 100.0, 0.0);
                 v_
             }
             Kind::ForceVorticles => {
@@ -396,7 +448,7 @@ impl Kind {
                     f("Vorticles", "Rise speed", 1.0, 0.0, 10.0, ""),
                     v("Transform", "Position", [0.0, 0.0, 0.5], -4.0, 4.0, "m"),
                 ];
-                mask(&mut v_);
+                force_common(&mut v_, 100.0, 0.0);
                 v_
             }
             Kind::LightAmbient => vec![f("Light", "Intensity", 0.15, 0.0, 2.0, ""), c("Light", "Color", [0.6, 0.7, 0.9])],
@@ -413,44 +465,82 @@ impl Kind {
                 v("Transform", "Position", [0.0, 0.0, 0.4], -4.0, 4.0, "m"),
             ],
             Kind::FireGradient => vec![
-                c("Gradient", "Cold color", [0.45, 0.025, 0.0]),
-                c("Gradient", "Mid color", [1.0, 0.2, 0.012]),
-                c("Gradient", "Hot color", [1.0, 0.62, 0.22]),
-                f("Gradient", "Min temperature", 800.0, 300.0, 6000.0, "K"),
-                f("Gradient", "Max temperature", 4300.0, 300.0, 6000.0, "K"),
-                f("Gradient", "Brightness", 1.0, 0.0, 5.0, ""),
+                p("Gradient", "Interpolation color space", Ch(0), &["RGB", "Linear RGB", "HSV", "OKLab"]),
+                g("Gradient", "Color gradient", vec![
+                    GStop { pos: 0.0, col: [0.45, 0.025, 0.0] },
+                    GStop { pos: 0.5, col: [1.0, 0.2, 0.012] },
+                    GStop { pos: 1.0, col: [1.0, 0.62, 0.22] },
+                ]),
             ],
-            Kind::ColorConstant => vec![
-                c("Color", "Color", [1.0, 0.45, 0.1]),
-                f("Color", "Min temperature", 800.0, 300.0, 6000.0, "K"),
-                f("Color", "Max temperature", 4300.0, 300.0, 6000.0, "K"),
-                f("Color", "Brightness", 1.0, 0.0, 5.0, ""),
-            ],
-            Kind::ColorBlackbody => vec![
-                f("Blackbody", "Min temperature", 900.0, 300.0, 6000.0, "K"),
-                f("Blackbody", "Max temperature", 3600.0, 300.0, 12000.0, "K"),
-                f("Blackbody", "Brightness", 1.0, 0.0, 5.0, ""),
-                f("Blackbody", "Saturation", 1.0, 0.0, 2.0, ""),
-            ],
+            Kind::ColorConstant => vec![c("Color", "Color", [1.0, 0.45, 0.1])],
+            Kind::ColorBlackbody => vec![f("Blackbody", "Saturation", 1.0, 0.0, 2.0, "")],
             Kind::Skybox => vec![c("Sky", "Top color", [0.06, 0.12, 0.28]), c("Sky", "Bottom color", [0.2, 0.22, 0.26])],
-            Kind::Ground => vec![c("Ground", "Color", [0.3, 0.3, 0.3]), f("Ground", "Height", -0.2, -0.4, 1.0, "m")],
+            Kind::Ground => vec![c("Ground", "Color", [0.3, 0.3, 0.3]), f("Ground", "Height", -0.2, -2.0, 2.0, "m")],
             Kind::Shading => vec![
+                b("Lighting", "Advanced parameters", false),
+                f("Lighting", "Shadowing sharpness", 75.0, 0.0, 100.0, "%"),
+                f("Lighting", "Lighting anisotropy", 50.0, -100.0, 100.0, "%"),
+                f("Lighting", "Ambient occlusion", 0.0, 0.0, 100.0, "%"),
+                c("Lighting", "Extinction color", [1.0, 1.0, 1.0]),
+                f("Lighting", "Smoke shadow density", 100.0, 0.0, 400.0, "%"),
+                f("Lighting", "Smoke shadow intensity", 50.0, 0.0, 100.0, "%"),
+                f("Lighting", "Shadow steps", 64.0, 8.0, 128.0, "").int().adv(),
+                f("Lighting", "Shadow max distance", 100.0, 10.0, 100.0, "%").adv(),
+                f("Scattering", "Direct light contribution", 25.0, 0.0, 400.0, "%"),
+                f("Scattering", "Flames contribution", 0.0, 0.0, 400.0, "%"),
+                f("Scattering", "Particles contribution", 0.0, 0.0, 400.0, "%"),
+                f("Scattering", "Scattering radius", 0.15, 0.01, 2.0, "m"),
+                f("Scattering", "Scattering occlusion", 0.75, 0.0, 1.0, ""),
+                b("Emissive masking", "Masking Active", false),
+                f("Emissive masking", "Density reference", 0.3, 0.0, 2.0, ""),
+                f("Emissive masking", "Width", 0.3, 0.01, 2.0, ""),
+                f("Emissive masking", "Masking ramp", 0.4, 0.05, 4.0, ""),
+                f("Emissive masking", "Masking intensity", 100.0, 0.0, 100.0, "%"),
+                f("Emissive masking", "Low frequencies", 50.0, 0.0, 100.0, "%"),
+                f("Emissive masking", "Medium frequencies", 50.0, 0.0, 100.0, "%"),
+                f("Emissive masking", "High frequencies", 50.0, 0.0, 100.0, "%"),
+                b("Flames", "Render flames", true),
+                ui("Flames", "Temperature Histogram", "hist_temp"),
+                r("Flames", "Flames remap range", [800.0, 4300.0], (0.0, 10000.0), "K").lab("Coloring remap range"),
+                f("Flames", "Flames remap ramp", 1.0, 0.1, 8.0, "").lab("Coloring remap ramp"),
+                b("Flames", "Clamp the remapping", true),
+                f("Flames", "Shaping by flames", 0.0, 0.0, 2000.0, "%"),
+                f("Flames", "Shaping by density", 0.0, 0.0, 1000.0, "%"),
+                p("Flames", "Flames coloring", Ch(0), &["Exposed Color Gradient", "Color Gradient", "Blackbody", "Single Color"]),
+                c("Flames", "Fire color", [1.0, 0.45, 0.12]),
+                b("Flames", "Flames translucency", false),
+                f("Flames", "Flames density min limit", 0.0, 0.0, 100.0, "%"),
+                f("Flames", "Flames density scale", 100.0, 0.0, 1000.0, "%"),
+                f("Flames", "Flames opacity", 0.0, 0.0, 100.0, "%"),
+                b("Smoke", "Render smoke", true),
+                b("Smoke", "Remap by temperature", false),
+                ui("Smoke", "Smoke Histogram", "hist_smoke"),
+                r("Smoke", "Smoke remap range", [0.0, 1.0], (0.0, 10000.0), "").lab("Coloring remap range"),
+                f("Smoke", "Smoke remap ramp", 1.0, 0.1, 8.0, "").lab("Coloring remap ramp"),
+                p("Smoke", "Smoke coloring", Ch(0), &["Single Color", "Color Gradient"]),
                 c("Smoke", "Smoke color", [0.1, 0.1, 0.1]),
-                f("Smoke", "Absorption", 3.0, 0.0, 10.0, ""),
-                f("Smoke", "Shadow strength", 1.0, 0.0, 3.0, ""),
-                f("Detail", "Fine detail", 0.0, 0.0, 3.0, ""),
+                f("Smoke", "Smoke density min limit", 0.0, 0.0, 100.0, "%"),
+                f("Smoke", "Smoke density clamp", 1000.0, 0.0, 1000.0, "%"),
+                f("Smoke", "Smoke density scale", 100.0, 0.0, 1000.0, "%"),
+                b("Fuel", "Render fuel", false),
+                c("Fuel", "Fuel color", [0.3, 0.55, 1.0]).when("Render fuel", 1),
+                f("Fuel", "Fuel density scale", 100.0, 0.0, 1000.0, "%").when("Render fuel", 1),
+                b("Rendering", "Raymarch sharpening", false),
+                f("Rendering", "Smoke sharpening", 250.0, 100.0, 500.0, "%").when("Raymarch sharpening", 1),
+                f("Rendering", "Flames sharpening", 250.0, 100.0, 500.0, "%").when("Raymarch sharpening", 1),
+                f("Rendering", "Temperature sharpening", 250.0, 100.0, 500.0, "%").when("Raymarch sharpening", 1),
             ],
             Kind::Camera => vec![
                 f("Camera", "Field of view", 40.0, 10.0, 100.0, "°"),
-                f("Camera", "Distance", 2.6, 0.5, 20.0, "m"),
+                f("Camera", "Distance", 2.6, 0.5, 40.0, "m"),
                 f("Camera", "Yaw", 90.0, -180.0, 180.0, "°"),
                 f("Camera", "Pitch", 8.0, -89.0, 89.0, "°"),
-                f("Camera", "Target height", 0.43, -1.0, 4.0, "m"),
+                f("Camera", "Target height", 0.43, -1.0, 8.0, "m"),
             ],
             Kind::CameraFree => vec![
                 f("Camera", "Field of view", 40.0, 10.0, 100.0, "°"),
-                v("Camera", "Position", [2.6, 0.0, 0.6], -20.0, 20.0, "m"),
-                v("Camera", "Look at", [0.0, 0.0, 0.45], -20.0, 20.0, "m"),
+                v("Camera", "Position", [2.6, 0.0, 0.6], -40.0, 40.0, "m"),
+                v("Camera", "Look at", [0.0, 0.0, 0.45], -40.0, 40.0, "m"),
             ],
             Kind::Simulation => vec![
                 p("Domain", "Resolution", Ch(1), RES),
@@ -470,29 +560,101 @@ impl Kind {
                 v("Wind", "Wind", [0.0, 0.0, 0.0], -3.0, 3.0, "m/s"),
             ],
             Kind::VolumeProcessing => vec![
-                f("Volume", "Smoke density", 1.0, 0.0, 5.0, ""),
-                f("Volume", "Temperature multiplier", 1.0, 0.0, 3.0, ""),
+                p("Post Process", "Volume post process", Ch(0), &["None", "Motion Blur", "Sharpen", "Dilate"]),
+                f("Post Process", "Post process strength", 50.0, 0.0, 100.0, "%"),
+                b("Post Modulation 1", "Active", false),
+                p("Post Modulation 1", "Modulated channel", Ch(0), &["Smoke", "Flames"]).when("Active", 1),
+                f("Post Modulation 1", "Noise scale", 10.0, 1.0, 200.0, "cm").when("Active", 1),
+                f("Post Modulation 1", "Modulation intensity", 50.0, 0.0, 100.0, "%").when("Active", 1),
+                f("Post Modulation 1", "Modulation speed", 1.0, 0.0, 10.0, "").when("Active", 1),
+                f("Slicing Mask", "X- wall offset", 0.0, 0.0, 100.0, "%"),
+                f("Slicing Mask", "X- wall width", 0.0, 0.0, 100.0, "%"),
+                f("Slicing Mask", "X+ wall offset", 0.0, 0.0, 100.0, "%"),
+                f("Slicing Mask", "X+ wall width", 0.0, 0.0, 100.0, "%"),
+                f("Slicing Mask", "Y- wall offset", 0.0, 0.0, 100.0, "%"),
+                f("Slicing Mask", "Y- wall width", 0.0, 0.0, 100.0, "%"),
+                f("Slicing Mask", "Y+ wall offset", 0.0, 0.0, 100.0, "%"),
+                f("Slicing Mask", "Y+ wall width", 0.0, 0.0, 100.0, "%"),
+                f("Slicing Mask", "Z- ground offset", 0.0, 0.0, 100.0, "%"),
+                f("Slicing Mask", "Z- ground width", 0.0, 0.0, 100.0, "%"),
+                f("Slicing Mask", "Z+ roof offset", 0.0, 0.0, 100.0, "%"),
+                f("Slicing Mask", "Z+ roof width", 0.0, 0.0, 100.0, "%"),
+                f("Slicing Mask", "Mask ramp", 1.0, 0.1, 8.0, ""),
+            ],
+            Kind::Scene => vec![
+                f("Tonemapping", "Gamma", 2.2, 1.0, 3.0, ""),
+                f("Tonemapping", "Exposure", 1.0, 0.0, 8.0, ""),
+                f("Tonemapping", "Color vibrance", 0.0, -1.0, 1.0, ""),
+                p("Tonemapping", "HDR Tonemapping", Ch(2), &["None", "Reinhard", "ACES", "Filmic", "Uchimura", "AgX"]),
+                f("Tonemapping", "Tonemap dithering", 0.0, 0.0, 100.0, "%"),
+                f("Tonemapping", "Contrast", 0.0, -1.0, 1.0, ""),
+                f("Tonemapping", "Brightness", 0.0, -1.0, 1.0, ""),
+                f("Tonemapping", "Saturation", 0.0, -1.0, 1.0, ""),
+                p("Colors", "Channels swizzling", Ch(0), &["RGB", "RBG", "GRB", "GBR", "BRG", "BGR"]),
+                f("Colors", "Bloom Intensity", 0.0, 0.0, 10.0, ""),
+                f("Colors", "Bloom Radius", 0.2, 0.0, 1.0, ""),
+                f("Vignetting", "Width", 300.0, 0.0, 2000.0, "pixels").int(),
+                f("Vignetting", "Offset", 100.0, 0.0, 2000.0, "pixels").int(),
+                f("Vignetting", "Roundness", 50.0, 0.0, 100.0, "%"),
+                f("Vignetting", "Intensity", 0.0, 0.0, 100.0, "%"),
+                p("Style", "Rendering style", Ch(0), &[
+                    "Realistic", "Pixelized", "Edge Detect Filter", "Chromatic Aberration", "Kuwahara", "Anisotropic Kuwahara",
+                    "Colored Thin Strokes", "Thick Strokes", "High Contrast Strokes", "Colored Thick Strokes",
+                ]),
+                f("Style", "Style size", 4.0, 1.0, 32.0, "pixels").int().when_not("Rendering style", 0),
+                f("Style", "RGB quantization", 0.0, 0.0, 64.0, "levels").int(),
+                f("Style", "Hue quantization", 0.0, 0.0, 64.0, "levels").int(),
+                f("Style", "Value quantization", 0.0, 0.0, 64.0, "levels").int(),
+                f("Style", "Saturation quantization", 0.0, 0.0, 64.0, "levels").int(),
+                f("Style", "Quantization dither", 0.0, 0.0, 100.0, "%"),
+                p("Style", "Dithering mode", Ch(0), &["Bayer", "Noise", "None"]),
+                f("Style", "Translucency limit", 0.0, 0.0, 100.0, "%"),
+                f("Style", "Translucency sharpening", 0.0, 0.0, 100.0, "%"),
+                p("Style", "Remapping style", Ch(0), &["None", "Grayscale", "Sepia", "Thermal", "Night Vision", "Infrared"]),
             ],
             Kind::Render => vec![
-                f("Timeline", "Duration", 64.0, 1.0, 400.0, "f"),
-                f("Output", "Width", 512.0, 32.0, 4096.0, "px"),
-                f("Output", "Height", 512.0, 32.0, 4096.0, "px"),
-                f("Output", "Flipbook columns", 8.0, 1.0, 16.0, ""),
-                f("Output", "Frame step", 1.0, 1.0, 8.0, "f"),
+                f("Timeline", "Duration", 64.0, 1.0, 2000.0, "f").int().hide(),
+                passes("Render Passes", "Mapping", vec![RPass { src: 0, hdr: true, dst: 0 }, RPass { src: 1, hdr: false, dst: 2 }]),
+                p("Export", "Export Mode", Ch(0), &["Flipbook", "Sequence"]).seg(),
+                f("Export", "Flipbook width", 2048.0, 64.0, 8192.0, "px").int().when("Export Mode", 0),
+                f("Export", "Flipbook height", 2048.0, 64.0, 8192.0, "px").int().when("Export Mode", 0),
+                f("Export", "Flipbook columns", 8.0, 1.0, 32.0, "").int().when("Export Mode", 0),
+                f("Export", "Flipbook rows", 8.0, 1.0, 32.0, "").int().when("Export Mode", 0),
+                ui("Export", "Flipbook layout", "flipbook_grid").when("Export Mode", 0),
+                f("Export", "Image width", 1024.0, 32.0, 8192.0, "px").int().when("Export Mode", 1),
+                f("Export", "Image height", 1024.0, 32.0, 8192.0, "px").int().when("Export Mode", 1),
+                f("Export", "First Frame", 0.0, 0.0, 10000.0, "").int(),
+                f("Export", "Number of Frames", 64.0, 1.0, 4096.0, "").int(),
+                f("Export", "Frame Stride", 1.0, 1.0, 64.0, "").int(),
+                f("Export", "Numbering offset", 0.0, -10000.0, 10000.0, "").int(),
+                b("Export", "Absolute Frames", false),
+                text("Export", "Directory", ""),
+                text("Export", "Filename", "$(project)_$(safename)"),
+                p("Export", "File format", Ch(0), &[".png", ".exr", ".tga"]),
+                ui("Export", "Export to file", "export_buttons"),
+                p("Render Settings", "Alpha Blending Mode", Ch(0), &["Premultiplied Alpha", "Straight Alpha", "Opaque"]),
+                b("Render Settings", "Invert Render Alpha", false),
+                p("Render Settings", "Shapes Rendering", Ch(0), &["Holdout", "Visible", "Hidden"]),
+                p("Render Settings", "Shapes Masking", Ch(0), &["No Masking", "Mask Inside", "Mask Outside"]),
+                b("Render Settings", "Invert Shapes Alpha", false),
+                b("Render Settings", "Volume Occludes Particles", false),
+                b("Render Settings", "Particles Occlude Volume", false),
+                b("Render Settings", "Render Volume", true),
+                b("Render Settings", "Render Particles", true),
             ],
             Kind::Import => vec![f("Import", "Density scale", 1.0, 0.0, 10.0, ""), f("Import", "Temperature scale", 1.0, 0.0, 10.0, "")],
             Kind::ExportImage => vec![
-                f("Output", "Width", 1024.0, 32.0, 4096.0, "px"),
-                f("Output", "Height", 1024.0, 32.0, 4096.0, "px"),
-                f("Output", "Frames", 64.0, 1.0, 2000.0, "f"),
-                f("Output", "Frame step", 1.0, 1.0, 8.0, "f"),
+                f("Output", "Width", 1024.0, 32.0, 8192.0, "px").int(),
+                f("Output", "Height", 1024.0, 32.0, 8192.0, "px").int(),
+                f("Output", "Frames", 64.0, 1.0, 2000.0, "f").int(),
+                f("Output", "Frame step", 1.0, 1.0, 8.0, "f").int(),
             ],
             Kind::ExportFlipbook => vec![
-                f("Output", "Tile width", 256.0, 16.0, 2048.0, "px"),
-                f("Output", "Tile height", 256.0, 16.0, 2048.0, "px"),
-                f("Output", "Columns", 8.0, 1.0, 16.0, ""),
-                f("Output", "Frames", 64.0, 1.0, 256.0, "f"),
-                f("Output", "Frame step", 1.0, 1.0, 8.0, "f"),
+                f("Output", "Tile width", 256.0, 16.0, 2048.0, "px").int(),
+                f("Output", "Tile height", 256.0, 16.0, 2048.0, "px").int(),
+                f("Output", "Columns", 8.0, 1.0, 16.0, "").int(),
+                f("Output", "Frames", 64.0, 1.0, 256.0, "f").int(),
+                f("Output", "Frame step", 1.0, 1.0, 8.0, "f").int(),
             ],
             Kind::ExportVolume => vec![b("Output", "Include fuel", true)],
             Kind::ModConstant => vec![f("Value", "Value", 1.0, -1000.0, 1000.0, "")],
@@ -522,17 +684,35 @@ impl Kind {
                 f("Envelope", "Repeat every", 0.0, 0.0, 60.0, "s"),
             ],
             Kind::ModMidi => vec![
-                f("MIDI", "Device", 0.0, 0.0, 15.0, ""),
-                f("MIDI", "Channel", 1.0, 1.0, 16.0, ""),
+                f("MIDI", "Device", 0.0, 0.0, 15.0, "").int(),
+                f("MIDI", "Channel", 1.0, 1.0, 16.0, "").int(),
                 p("MIDI", "Message", Ch(0), MIDI),
-                f("MIDI", "Number", 1.0, 0.0, 127.0, ""),
+                f("MIDI", "Number", 1.0, 0.0, 127.0, "").int(),
                 f("MIDI", "Min", 0.0, -1000.0, 1000.0, ""),
                 f("MIDI", "Max", 1.0, -1000.0, 1000.0, ""),
             ],
-            Kind::Scene | Kind::Comment | Kind::Note => vec![],
+            Kind::Comment | Kind::Note => vec![],
         }
     }
 }
+
+/// One colour stop of a gradient (position 0..1).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct GStop {
+    pub pos: f32,
+    pub col: [f32; 3],
+}
+
+/// One render pass of the Render node: what to render (`src`) and how to store it (`dst`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct RPass {
+    pub src: usize,
+    pub hdr: bool,
+    pub dst: usize,
+}
+
+pub const PASS_SOURCES: [&str; 8] = ["Render All", "Alpha", "Emission", "Scattering", "Temperature", "Density", "Fuel", "Depth"];
+pub const PASS_TARGETS: [&str; 3] = ["RGBA", "RGB", "R"];
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Val {
@@ -541,6 +721,13 @@ pub enum Val {
     C([f32; 3]),
     V([f32; 3]),
     Ch(usize),
+    /// min / max
+    R([f32; 2]),
+    G(Vec<GStop>),
+    S(String),
+    P(Vec<RPass>),
+    /// a display-only row (histogram, preview, buttons…), drawn by `special_row`
+    Ui(&'static str),
 }
 
 #[derive(Clone)]
@@ -557,10 +744,86 @@ pub struct Param {
     /// Modulator node (id) driving this setting, and which axis for X/Y/Z settings (3 = all).
     pub driver: Option<u64>,
     pub axis: u8,
+    /// Name shown in the panel (several settings share a label, e.g. two "Coloring remap range").
+    pub label: &'static str,
+    /// Only shown when another setting of the node has this choice index (bool: 0/1); `neg` inverts.
+    pub show_if: Option<(&'static str, usize, bool)>,
+    /// Only shown when the node's "Advanced parameters" is on.
+    pub adv: bool,
+    /// Decimal places in the panel (0 = whole numbers).
+    pub dec: u8,
+    /// Not shown in the node's settings (edited elsewhere, e.g. the timeline).
+    pub hidden: bool,
+    /// Two-option choice drawn as a pair of buttons.
+    pub seg: bool,
+}
+
+impl Param {
+    fn lab(mut self, l: &'static str) -> Self {
+        self.label = l;
+        self
+    }
+    fn when(mut self, n: &'static str, v: usize) -> Self {
+        self.show_if = Some((n, v, false));
+        self
+    }
+    fn when_not(mut self, n: &'static str, v: usize) -> Self {
+        self.show_if = Some((n, v, true));
+        self
+    }
+    fn adv(mut self) -> Self {
+        self.adv = true;
+        self
+    }
+    fn int(mut self) -> Self {
+        self.dec = 0;
+        self
+    }
+    fn hide(mut self) -> Self {
+        self.hidden = true;
+        self
+    }
+    fn seg(mut self) -> Self {
+        self.seg = true;
+        self
+    }
 }
 
 fn mk(section: &'static str, name: &'static str, val: Val, range: (f32, f32), unit: &'static str) -> Param {
-    Param { name, section, unit, def: val.clone(), val, range, choices: &[], fav: false, rand: false, driver: None, axis: 3 }
+    Param {
+        name,
+        section,
+        unit,
+        def: val.clone(),
+        val,
+        range,
+        choices: &[],
+        fav: false,
+        rand: false,
+        driver: None,
+        axis: 3,
+        label: name,
+        show_if: None,
+        adv: false,
+        dec: 3,
+        hidden: false,
+        seg: false,
+    }
+}
+fn r(s: &'static str, n: &'static str, v: [f32; 2], range: (f32, f32), unit: &'static str) -> Param {
+    mk(s, n, Val::R(v), range, unit)
+}
+fn g(s: &'static str, n: &'static str, stops: Vec<GStop>) -> Param {
+    mk(s, n, Val::G(stops), (0.0, 1.0), "")
+}
+fn text(s: &'static str, n: &'static str, v: &str) -> Param {
+    mk(s, n, Val::S(v.into()), (0.0, 1.0), "")
+}
+fn ui(s: &'static str, n: &'static str, key: &'static str) -> Param {
+    mk(s, n, Val::Ui(key), (0.0, 1.0), "")
+}
+fn passes(s: &'static str, n: &'static str, v: Vec<RPass>) -> Param {
+    mk(s, n, Val::P(v), (0.0, 1.0), "")
 }
 fn f(s: &'static str, n: &'static str, v: f32, lo: f32, hi: f32, unit: &'static str) -> Param {
     mk(s, n, Val::F(v), (lo, hi), unit)
@@ -609,10 +872,56 @@ impl Node {
     pub fn ch(&self, name: &str) -> usize {
         match self.get(name) { Some(Val::Ch(v)) => *v, _ => 0 }
     }
+    pub fn r(&self, name: &str) -> [f32; 2] {
+        match self.get(name) { Some(Val::R(v)) => *v, _ => [0.0, 1.0] }
+    }
+    pub fn grad(&self, name: &str) -> Vec<GStop> {
+        match self.get(name) { Some(Val::G(v)) => v.clone(), _ => vec![] }
+    }
+    pub fn s(&self, name: &str) -> String {
+        match self.get(name) { Some(Val::S(v)) => v.clone(), _ => String::new() }
+    }
+    pub fn passes(&self, name: &str) -> Vec<RPass> {
+        match self.get(name) { Some(Val::P(v)) => v.clone(), _ => vec![] }
+    }
+    /// Set a setting given in 0.4 units: the few settings that kept their name but changed
+    /// units are converted (see `UNIT_CHANGED`); everything else is a plain `set`.
+    pub fn set_old(&mut self, name: &str, val: Val) {
+        if UNIT_CHANGED.contains(&(self.kind, name)) {
+            legacy_set(self, name, &val);
+        } else {
+            self.set(name, val);
+        }
+    }
+    /// Set a setting by name; names from older versions are translated (see `legacy_set`).
     pub fn set(&mut self, name: &str, val: Val) {
         if let Some(p) = self.params.iter_mut().find(|p| p.name == name) {
             p.val = val;
+        } else {
+            let known = legacy_set(self, name, &val);
+            debug_assert!(known, "{} has no setting '{name}'", self.kind.name());
         }
+    }
+    /// Is this setting shown in the panel right now?
+    pub fn visible(&self, p: &Param) -> bool {
+        if p.hidden || (p.adv && !self.b("Advanced parameters")) {
+            return false;
+        }
+        match p.show_if {
+            Some((n, v, neg)) => {
+                let cur = match self.get(n) {
+                    Some(Val::Ch(i)) => *i,
+                    Some(Val::B(b)) => *b as usize,
+                    _ => v,
+                };
+                (cur == v) != neg
+            }
+            None => true,
+        }
+    }
+    /// Domain width in metres (Simulation node).
+    pub fn domain_width(&self) -> f32 {
+        self.f("Domain size")
     }
     pub fn size(&self) -> Vec2 {
         if self.kind == Kind::Comment {
@@ -628,6 +937,65 @@ impl Node {
         let x = if output { self.pos.x + self.size().x - 8.0 } else { self.pos.x + 8.0 };
         pos2(x, self.pos.y + 24.0 + idx as f32 * 17.5 + 8.0)
     }
+}
+
+/// Grid sizes of the old Low / Medium / High / Ultra choice, in UI axes (X, Y, Z-up).
+
+/// Settings that were renamed or re-expressed in newer versions: map them onto today's settings.
+/// Returns false if the name is unknown. Used by presets and when opening older projects.
+/// Settings that kept their 0.4 name but count in new units (0.4 used plain multipliers).
+/// Values from 0.4 projects and the presets go through `legacy_set` to be converted.
+pub const UNIT_CHANGED: [(Kind, &str); 1] = [(Kind::ForceNoise, "Scale")];
+
+/// Force: Noise Amplitude per unit of 0.4's "Strength" (Emission Chaos / every other noise force).
+/// Chosen so the defaults (50 and 19.333) give back 0.4's 0.3 and 2.0 exactly.
+pub const NOISE_EMIT: f64 = 500.0 / 3.0;
+pub const NOISE_FIRE: f64 = 9.6665;
+
+pub fn legacy_set(n: &mut Node, name: &str, val: &Val) -> bool {
+    let fv = match val { Val::F(x) => *x, Val::Ch(i) => *i as f32, _ => 0.0 };
+    let put = |n: &mut Node, k: &str, v: Val| {
+        if let Some(p) = n.params.iter_mut().find(|p| p.name == k) {
+            p.val = v;
+        }
+    };
+    match (n.kind, name) {
+        (Kind::Shading, "Absorption") => put(n, "Smoke density scale", Val::F(fv / 3.0 * 100.0)),
+        (Kind::Shading, "Shadow strength") => put(n, "Smoke shadow density", Val::F(fv * 100.0)),
+        (Kind::Shading, "Fine detail") => {}
+        (Kind::FireGradient, "Cold color" | "Mid color" | "Hot color") => {
+            let Val::C(c) = val else { return true };
+            let want = match name { "Cold color" => 0.0, "Mid color" => 0.5, _ => 1.0 };
+            let mut stops = n.grad("Color gradient");
+            if let Some(s) = stops.iter_mut().min_by(|a, b| (a.pos - want).abs().total_cmp(&(b.pos - want).abs())) {
+                s.col = *c;
+            }
+            put(n, "Color gradient", Val::G(stops));
+        }
+        (Kind::FireGradient | Kind::ColorConstant | Kind::ColorBlackbody, "Min temperature" | "Max temperature" | "Brightness") => {}
+        (Kind::ForceNoise, "Strength") => {
+            let emission = n.title == "Emission Chaos";
+            put(n, "Amplitude", Val::F((fv as f64 * if emission { NOISE_EMIT } else { NOISE_FIRE }) as f32));
+        }
+        (Kind::ForceNoise, "Scale") => {
+            let emission = n.title == "Emission Chaos";
+            put(n, "Scale", Val::F(if emission { 8.0 } else { 25.0 } / fv.max(0.01)));
+        }
+        (Kind::ForceNoise, "Speed") => put(n, "Animation speed", Val::F(fv * 2.0)),
+        (Kind::Emitter, "Expansion") => put(n, "Additional pressure rate", Val::F(fv * 100.0)),
+        (Kind::Emitter, "Show shape") => {}
+        (Kind::Emitter, "Shape color") => put(n, "Emitter color", val.clone()),
+        (Kind::Render, "Width") => put(n, "Image width", val.clone()),
+        (Kind::Render, "Height") => put(n, "Image height", val.clone()),
+        (Kind::Render, "Flipbook columns") => {
+            put(n, "Flipbook columns", val.clone());
+            put(n, "Flipbook rows", val.clone());
+        }
+        (Kind::Render, "Frame step") => put(n, "Frame Stride", val.clone()),
+        (Kind::VolumeProcessing, "Smoke density" | "Temperature multiplier") => {}
+        _ => return false,
+    }
+    true
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -687,7 +1055,7 @@ pub struct Graph {
     menu_pos: Pos2,
     next_id: u64,
     pub details_tab: usize,
-    active_section: &'static str,
+    pub active_section: &'static str,
     rng: u32,
     /// Export node whose "Export now" was pressed (the app runs it).
     pub export_request: Option<usize>,
@@ -746,7 +1114,13 @@ impl Default for Graph {
         }
         g.nodes[0].title = "Fire Shape".into();
         g.nodes[1].title = "Emission Chaos".into();
-        g.nodes[1].set("Strength", Val::F(0.3));
+        g.nodes[1].set("Amplitude", Val::F(50.0));
+        g.nodes[1].set("Scale", Val::F(8.0));
+        g.nodes[1].set("Seed", Val::F(267.0));
+        g.nodes[1].set("Octaves", Val::F(1.0));
+        g.nodes[1].set("Mode", Val::Ch(2));
+        g.nodes[1].set("Constant mask", Val::F(100.0));
+        g.nodes[1].set("Temperature mask", Val::F(0.0));
         g.nodes[2].title = "Fire Chaos".into();
         g.nodes[7].title = "Fire Color Gradient".into();
         g.nodes[12].title = "Camera".into();
@@ -996,6 +1370,11 @@ impl Graph {
                 Val::C(_) => Val::C([self.rand(), self.rand(), self.rand()]),
                 Val::V(_) => Val::V([lo + (hi - lo) * self.rand(), lo + (hi - lo) * self.rand(), lo + (hi - lo) * self.rand()]),
                 Val::Ch(_) => Val::Ch(((self.rand() * p.choices.len() as f32) as usize).min(p.choices.len() - 1)),
+                Val::R(_) => {
+                    let (a, b) = (lo + (hi - lo) * self.rand(), lo + (hi - lo) * self.rand());
+                    Val::R([a.min(b), a.max(b)])
+                }
+                other => other.clone(),
             };
         }
         self.nodes = nodes;
@@ -1014,9 +1393,12 @@ impl Graph {
         g.selected = None;
         let mut drivers: Vec<(usize, &'static str)> = vec![];
         let mut lines = text.lines();
-        if lines.next().map(|l| l.starts_with("firecraft-project")) != Some(true) {
+        let header = lines.next().unwrap_or("");
+        if !header.starts_with("firecraft-project") {
             return Err("not a FireCraft project".into());
         }
+        // 0.4 projects: version 1 without the new noise settings
+        let old_units = header.trim() == "firecraft-project 1" && !text.contains("\tAmplitude\t");
         for line in lines {
             let c: Vec<&str> = line.split('\t').collect();
             let num = |i: usize| c.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
@@ -1040,15 +1422,45 @@ impl Graph {
                 "p" => {
                     let ni = g.nodes.len().saturating_sub(1);
                     let Some(n) = g.nodes.last_mut() else { continue };
-                    let Some(p) = n.params.iter_mut().find(|p| p.name == c.get(1).copied().unwrap_or("")) else { continue };
-                    let nums: Vec<f32> = c.get(2).unwrap_or(&"").split(' ').filter_map(|s| s.parse().ok()).collect();
+                    let pname = c.get(1).copied().unwrap_or("");
+                    let raw = c.get(2).copied().unwrap_or("");
+                    let nums: Vec<f32> = raw.split(' ').filter_map(|s| s.parse().ok()).collect();
                     let a3 = |d: &[f32]| [d.first().copied().unwrap_or(0.0), d.get(1).copied().unwrap_or(0.0), d.get(2).copied().unwrap_or(0.0)];
-                    p.val = match p.val {
+                    if old_units && UNIT_CHANGED.contains(&(n.kind, pname)) {
+                        legacy_set(n, pname, &Val::F(nums.first().copied().unwrap_or(0.0)));
+                        continue;
+                    }
+                    let Some(p) = n.params.iter_mut().find(|p| p.name == pname) else {
+                        // a setting from an older version
+                        let v = if nums.len() >= 3 { Val::V(a3(&nums)) } else { Val::F(nums.first().copied().unwrap_or(0.0)) };
+                        legacy_set(n, pname, &v);
+                        continue;
+                    };
+                    p.val = match &p.val {
                         Val::F(_) => Val::F(nums.first().copied().unwrap_or(0.0)),
                         Val::B(_) => Val::B(nums.first().copied().unwrap_or(0.0) != 0.0),
                         Val::C(_) => Val::C(a3(&nums)),
                         Val::V(_) => Val::V(a3(&nums)),
                         Val::Ch(_) => Val::Ch(nums.first().copied().unwrap_or(0.0) as usize),
+                        Val::R(_) => Val::R([nums.first().copied().unwrap_or(0.0), nums.get(1).copied().unwrap_or(1.0)]),
+                        Val::G(_) => Val::G(
+                            raw.split(';')
+                                .filter_map(|s| {
+                                    let v: Vec<f32> = s.split(' ').filter_map(|x| x.parse().ok()).collect();
+                                    (v.len() == 4).then(|| GStop { pos: v[0], col: [v[1], v[2], v[3]] })
+                                })
+                                .collect(),
+                        ),
+                        Val::S(_) => Val::S(raw.to_string()),
+                        Val::P(_) => Val::P(
+                            raw.split(';')
+                                .filter_map(|s| {
+                                    let v: Vec<usize> = s.split(' ').filter_map(|x| x.parse().ok()).collect();
+                                    (v.len() == 3).then(|| RPass { src: v[0].min(PASS_SOURCES.len() - 1), hdr: v[1] != 0, dst: v[2].min(PASS_TARGETS.len() - 1) })
+                                })
+                                .collect(),
+                        ),
+                        Val::Ui(k) => Val::Ui(*k),
                     };
                     p.fav = num(3) != 0.0;
                     p.rand = num(4) != 0.0;
@@ -1507,6 +1919,14 @@ impl Graph {
         ui.add_space(6.0);
         // node-specific actions
         match n.kind {
+            Kind::Render => {
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    if ui.button("⬆  Export").on_hover_text("Export with the settings in the Export tab").clicked() {
+                        self.export_request = Some(i);
+                    }
+                });
+            }
             Kind::ExportImage | Kind::ExportFlipbook | Kind::ExportVolume => {
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
@@ -1554,7 +1974,7 @@ impl Graph {
         ui.add_space(4.0);
         let mut sections: Vec<&'static str> = vec![];
         for p in &n.params {
-            if !sections.contains(&p.section) {
+            if !p.hidden && !sections.contains(&p.section) {
                 sections.push(p.section);
             }
         }
@@ -1569,21 +1989,25 @@ impl Graph {
         if !sections.contains(&self.active_section) {
             self.active_section = sections[0];
         }
-        ui.horizontal(|ui| {
-            ui.add_space(10.0);
-            ui.spacing_mut().item_spacing.x = 2.0;
-            let w = ((ui.available_width() - 20.0) / 6.0).min(125.0);
-            for s in &sections {
-                let on = *s == self.active_section;
-                let btn = egui::Button::new(egui::RichText::new(*s).color(if on { Color32::WHITE } else { TEXT }))
-                    .fill(if on { ACCENT } else { Color32::from_rgb(40, 42, 44) })
-                    .corner_radius(0.0)
-                    .min_size(vec2(w, 20.0));
-                if ui.add(btn).clicked() {
-                    self.active_section = s;
+        // tabs, wrapped into rows of up to 8 like the original
+        let per_row = sections.len().min(8).max(1);
+        for row in sections.chunks(per_row) {
+            ui.horizontal(|ui| {
+                ui.add_space(10.0);
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let w = ((ui.available_width() - 20.0) / per_row as f32 - 2.0).min(150.0);
+                for s in row {
+                    let on = *s == self.active_section;
+                    let btn = egui::Button::new(egui::RichText::new(*s).color(if on { Color32::WHITE } else { TEXT }))
+                        .fill(if on { ACCENT } else { Color32::from_rgb(40, 42, 44) })
+                        .corner_radius(0.0)
+                        .min_size(vec2(w, 20.0));
+                    if ui.add(btn).clicked() {
+                        self.active_section = s;
+                    }
                 }
-            }
-        });
+            });
+        }
         ui.add_space(4.0);
         let id = n.id;
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -1594,8 +2018,15 @@ impl Graph {
                 ui.add_space(12.0);
                 ui.label(egui::RichText::new(s).color(Color32::from_rgb(160, 162, 164)));
             });
-            for p in n.params.iter_mut().filter(|p| p.section == s) {
-                param_row(ui, p, id);
+            let rows: Vec<usize> = (0..n.params.len()).filter(|&k| n.params[k].section == s && n.visible(&n.params[k])).collect();
+            for k in rows {
+                if let Val::Ui(key) = n.params[k].val {
+                    if crate::widgets::special_row(ui, key, n.params[k].label, n) {
+                        self.export_request = Some(i);
+                    }
+                } else {
+                    param_row(ui, &mut n.params[k], id);
+                }
             }
         });
     }
@@ -1604,7 +2035,7 @@ impl Graph {
 
 /// Project text for a set of nodes and the wires between them.
 pub fn save_parts(nodes: &[Node], wires: &[Wire]) -> String {
-    let mut s = String::from("firecraft-project 1\n");
+    let mut s = String::from("firecraft-project 2\n");
     for n in nodes {
         s += &format!("node\t{:?}\t{}\t{}\t{}\n", n.kind, n.pos.x, n.pos.y, n.enabled as u8);
         if !n.title.is_empty() {
@@ -1619,6 +2050,11 @@ pub fn save_parts(nodes: &[Node], wires: &[Wire]) -> String {
                 Val::B(v) => format!("{}", *v as u8),
                 Val::C(a) | Val::V(a) => format!("{} {} {}", a[0], a[1], a[2]),
                 Val::Ch(v) => format!("{v}"),
+                Val::R(a) => format!("{} {}", a[0], a[1]),
+                Val::G(stops) => stops.iter().map(|s| format!("{} {} {} {}", s.pos, s.col[0], s.col[1], s.col[2])).collect::<Vec<_>>().join(";"),
+                Val::S(t) => t.replace(['\t', '\n'], " "),
+                Val::P(ps) => ps.iter().map(|q| format!("{} {} {}", q.src, q.hdr as u8, q.dst)).collect::<Vec<_>>().join(";"),
+                Val::Ui(_) => continue,
             };
             let drv = p.driver.and_then(|d| nodes.iter().position(|m| m.id == d)).map_or(String::new(), |ix| format!("\t{ix}\t{}", p.axis));
             s += &format!("p\t{}\t{}\t{}\t{}{}\n", p.name, v, p.fav as u8, p.rand as u8, drv);
@@ -1656,7 +2092,7 @@ pub fn param_row(ui: &mut Ui, p: &mut Param, node_id: u64) {
         let (lr, label_resp) = ui.allocate_exact_size(vec2(150.0, 18.0), Sense::click());
         let mut menus = vec![label_resp.on_hover_text(if p.driver.is_some() { "Driven by a modulator (right-click to change)" } else { "Right-click for options" })];
         let name_col = if p.driver.is_some() { Color32::from_rgb(255, 140, 120) } else { TEXT };
-        let shown = if p.driver.is_some() { format!("∿ {}", p.name) } else { p.name.to_string() };
+        let shown = if p.driver.is_some() { format!("∿ {}", p.label) } else { p.label.to_string() };
         let galley = ui.painter().layout_no_wrap(shown, FontId::proportional(12.0), name_col);
         let tw = galley.size().x;
         ui.painter().galley(pos2(lr.min.x, lr.center().y - galley.size().y / 2.0), galley, TEXT);
@@ -1668,10 +2104,37 @@ pub fn param_row(ui: &mut Ui, p: &mut Param, node_id: u64) {
         let (lo, hi) = p.range;
         let speed = (hi - lo) / 400.0;
         let unit = if p.unit.is_empty() { String::new() } else { format!(" {}", p.unit) };
+        let dec = p.dec as usize;
+        let speed = if dec == 0 { speed.max(0.2) } else { speed };
         ui.push_id((node_id, p.name), |ui| match &mut p.val {
             Val::F(v) => {
-                menus.push(ui.add_sized([210.0, 19.0], egui::DragValue::new(v).range(lo..=hi).speed(speed).fixed_decimals(3).suffix(unit)));
+                menus.push(ui.add_sized([210.0, 19.0], egui::DragValue::new(v).range(lo..=hi).speed(speed).fixed_decimals(dec).suffix(unit)));
             }
+            Val::R(a) => {
+                let (mut x, mut y) = (a[0], a[1]);
+                menus.push(ui.add_sized([103.0, 19.0], egui::DragValue::new(&mut x).range(lo..=hi).speed(speed).fixed_decimals(dec).suffix(format!("{unit} min"))));
+                menus.push(ui.add_sized([103.0, 19.0], egui::DragValue::new(&mut y).range(lo..=hi).speed(speed).fixed_decimals(dec).prefix("max ").suffix(unit.clone())));
+                *a = [x.min(y), y.max(x)];
+            }
+            Val::G(stops) => {
+                crate::widgets::gradient_editor(ui, stops, node_id);
+            }
+            Val::S(t) => {
+                if p.name == "Directory" {
+                    if ui.add(egui::Button::new("🗁").frame(false)).on_hover_text("Choose folder").clicked() {
+                        if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                            *t = d.display().to_string();
+                        }
+                    }
+                    ui.add(egui::TextEdit::singleline(t).hint_text("Documents/FireCraft Exports").desired_width(290.0));
+                } else {
+                    ui.add(egui::TextEdit::singleline(t).desired_width(210.0));
+                }
+            }
+            Val::P(ps) => {
+                crate::widgets::passes_editor(ui, ps);
+            }
+            Val::Ui(_) => {}
             Val::B(v) => {
                 ui.checkbox(v, "");
             }
@@ -1681,10 +2144,24 @@ pub fn param_row(ui: &mut Ui, p: &mut Param, node_id: u64) {
             Val::V(a) => {
                 for (k, l) in ["X", "Y", "Z"].iter().enumerate() {
                     ui.label(egui::RichText::new(*l).color(Color32::from_rgb(150, 152, 154)));
-                    menus.push(ui.add_sized([86.0, 19.0], egui::DragValue::new(&mut a[k]).range(lo..=hi).speed(speed).fixed_decimals(3).suffix(unit.clone())));
+                    menus.push(ui.add_sized([86.0, 19.0], egui::DragValue::new(&mut a[k]).range(lo..=hi).speed(speed).fixed_decimals(dec).suffix(unit.clone())));
+                }
+            }
+            Val::Ch(i) if p.seg => {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for (k, c) in p.choices.iter().enumerate() {
+                    let on = *i == k;
+                    let b = egui::Button::new(egui::RichText::new(*c).color(if on { Color32::WHITE } else { TEXT }))
+                        .fill(if on { Color32::from_rgb(20, 55, 82) } else { Color32::from_rgb(50, 52, 53) })
+                        .corner_radius(0.0)
+                        .min_size(vec2(105.0, 19.0));
+                    if ui.add(b).clicked() {
+                        *i = k;
+                    }
                 }
             }
             Val::Ch(i) => {
+                *i = (*i).min(p.choices.len().saturating_sub(1));
                 egui::ComboBox::from_id_salt("ch").width(200.0).selected_text(p.choices[*i]).show_ui(ui, |ui| {
                     for (k, c) in p.choices.iter().enumerate() {
                         ui.selectable_value(i, k, *c);
@@ -1769,6 +2246,17 @@ fn param_menu(ui: &mut Ui, p: &mut Param) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_units_are_converted() {
+        // a 0.4 project: noise Scale 1.0 was the Fire Chaos default (25 cm today)
+        let old = "firecraft-project 1\nnode\tFireChaos\t0\t0\t1\np\tScale\t1\np\tStrength\t2\n";
+        let g = Graph::load(old).unwrap();
+        assert_eq!(g.nodes[0].f("Scale"), 25.0);
+        assert!((g.nodes[0].f("Amplitude") - 19.333).abs() < 1e-4);
+        let g2 = Graph::load(&g.save()).unwrap();
+        assert_eq!(g2.nodes[0].f("Scale"), 25.0);
+    }
+
     #[test]
     fn default_graph_is_live_and_round_trips() {
         let g = Graph::default();

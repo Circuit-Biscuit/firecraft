@@ -9,6 +9,13 @@ struct Emitter {
     flags: vec4f, // shape, fuel add, smoke add, temperature replace
     chaos: vec4f, // strength, scale, speed, expansion
     extra: vec4f, // hollow, fade, _, _
+    // added after 0.4 (defaults reproduce 0.4)
+    r0: vec4f,    // world -> local rotation rows; r0.w = 1 when rotated
+    r1: vec4f,
+    r2: vec4f,
+    pn: vec4f,    // pressure random: intensity, frequency (1/cell), seed offset, speed
+    ch2: vec4f,   // emission noise: octaves, lacunarity, gain, shadow caster
+    ch3: vec4f,   // emission noise seed offset (xyz), _
 }
 
 struct Force {
@@ -18,6 +25,16 @@ struct Force {
     mpos: vec4f,  // mask centre (cells), mask on
     msize: vec4f, // mask half size (cells), mask shape
     mext: vec4f,  // mask torus thickness, softness, _, _
+    // added after 0.4 (defaults reproduce 0.4)
+    nz: vec4f,    // noise octaves, lacunarity, gain, curl (1/0)
+    nb: vec4f,    // noise bias (xyz), mode (0 volume, 1 particles, 2 both)
+    ns: vec4f,    // noise seed offset (xyz), 0.4 masking (1/0)
+    r0: vec4f,    // world -> local rotation rows (metres about the force position); r0.w = 1 when rotated/moved
+    r1: vec4f,
+    r2: vec4f,
+    mk: vec4f,    // field masks: constant, velocity, temperature, smoke
+    mr: vec4f,    // mask ranges: temperature min, max (kK above ambient), smoke min, max
+    fp: vec4f,    // force position (m), _
 }
 
 struct Coll {
@@ -33,6 +50,7 @@ struct Params {
     d: vec4f,  // force count, collider count, _, time (s)
     e: vec4f,  // cell size (m), res scale, _, _
     l: vec4f,  // light dir (xyz), shadow k
+    l2: vec4f, // shadow step scale (1 = 0.4), shadow steps (64 = 0.4), shadow caster count, _ (added after 0.4)
     em: array<Emitter, 32>,
     fo: array<Force, 8>,
     co: array<Coll, 8>,
@@ -50,6 +68,9 @@ struct Params {
 @group(0) @binding(8) var<storage, read_write> shadow: array<f32>;
 @group(0) @binding(9) var vol: texture_storage_3d<rgba16float, write>;
 @group(0) @binding(10) var<storage, read_write> occ: array<atomic<u32>>; // 8^3 bricks with content
+// added after 0.4: Shading histograms, and flames for "Shaping by flames"
+@group(0) @binding(11) var<storage, read_write> hist: array<atomic<u32>>; // 64 temperature + 64 smoke bins
+@group(0) @binding(12) var vol2: texture_storage_3d<rgba16float, write>;
 
 fn dims() -> vec3i { return vec3i(prm.n.xyz); }
 fn idx(c: vec3i) -> u32 {
@@ -158,7 +179,7 @@ fn heat_mask(pc: vec3f) -> f32 {
 }
 
 /// Sum of all Force nodes at a cell (cells/frame per frame, before dt and scale).
-fn forces_at(pc: vec3f, wp: vec3f, t: f32) -> vec3f {
+fn forces_at(pc: vec3f, wp: vec3f, t: f32, vel: vec3f) -> vec3f {
     var total = vec3f(0.0);
     var hm = -1.0;
     for (var k = 0u; k < u32(prm.d.x); k++) {
@@ -194,11 +215,38 @@ fn forces_at(pc: vec3f, wp: vec3f, t: f32) -> vec3f {
             f = (-dv.y * radial + dv.x * ax) / dl * exp(-(dl * dl) / (tube * tube)) * 2.0;
         } else if (ty < 3.5) {
             // noise: swirling curl noise, kept near the effect unless a mask shape is given
-            let q = wp * fo.a.z * 4.0 + vec3f(0.0, -t * fo.a.w * 2.0, t * fo.a.w * 0.7);
-            f = curl_noise(q) * 0.08 / 0.02;
-            if (fo.mpos.w < 0.5) {
-                if (hm < 0.0) { hm = heat_mask(pc); }
-                w *= hm;
+            if (fo.nb.w > 0.5 && fo.nb.w < 1.5) { continue; } // acts on particles only
+            var lp = wp;
+            if (fo.r0.w > 0.5) {
+                let dw = wp - fo.fp.xyz;
+                lp = vec3f(dot(fo.r0.xyz, dw), dot(fo.r1.xyz, dw), dot(fo.r2.xyz, dw));
+            }
+            var q = lp * fo.a.z * 4.0 + vec3f(0.0, -t * fo.a.w * 2.0, t * fo.a.w * 0.7);
+            if (any(fo.ns.xyz != vec3f(0.0))) { q += fo.ns.xyz; }
+            if (fo.nz.x < 1.5 && fo.nz.w > 0.5) {
+                f = curl_noise(q) * 0.08 / 0.02;
+            } else {
+                // octaves (lacunarity, gain), plain or curl noise
+                var amp = 1.0;
+                var sum = vec3f(0.0);
+                var norm = 0.0;
+                var qq = q;
+                for (var o = 0; o < i32(clamp(fo.nz.x, 1.0, 8.0)); o++) {
+                    var n3: vec3f;
+                    if (fo.nz.w > 0.5) { n3 = curl_noise(qq); } else { n3 = vnoise3(qq) * 2.0; }
+                    sum += n3 * amp;
+                    norm += amp;
+                    amp *= fo.nz.z;
+                    qq *= fo.nz.y;
+                }
+                f = sum / max(norm, 1e-6) * 0.08 / 0.02;
+            }
+            if (any(fo.nb.xyz != vec3f(0.0))) { f += fo.nb.xyz * 0.2; }
+            if (fo.ns.w > 0.5) {
+                if (fo.mpos.w < 0.5) {
+                    if (hm < 0.0) { hm = heat_mask(pc); }
+                    w *= hm;
+                }
             }
         } else if (ty < 4.5) {
             // vector field: push out, pull in, swirl around an axis, or updraft
@@ -221,6 +269,15 @@ fn forces_at(pc: vec3f, wp: vec3f, t: f32) -> vec3f {
                 let rr = pc - cpos;
                 f += cross(ax, rr) / sz * exp(-dot(rr, rr) / (sz * sz)) * 2.0;
             }
+        }
+        if (fo.ns.w < 0.5) {
+            // Masking: constant, velocity, temperature and smoke masks with their ranges
+            let sc = s_sca1(pc);
+            let tin = smoothstep(fo.mr.x - 0.05, fo.mr.x, sc.x) * (1.0 - smoothstep(fo.mr.y, fo.mr.y + 0.05, sc.x));
+            let sin_ = smoothstep(fo.mr.z - 0.01, fo.mr.z, sc.y) * (1.0 - smoothstep(fo.mr.w, fo.mr.w + 0.01, sc.y));
+            if (hm < 0.0) { hm = heat_mask(pc); }
+            let fm = fo.mk.x + fo.mk.y * clamp(length(vel) / 0.5, 0.0, 1.0) + fo.mk.z * hm * tin + fo.mk.w * smoothstep(0.0, 0.2, sc.y) * sin_;
+            w *= min(fm, 1.0);
         }
         total += f * fo.a.y * w;
     }
@@ -245,7 +302,11 @@ fn emit_forces(@builtin(global_invocation_id) g: vec3u) {
     let wp = pc * prm.e.x; // metres
     for (var k = 0u; k < prm.n.w; k++) {
         let e = prm.em[k];
-        let d = (pc - e.pos.xyz) / max(e.size.xyz, vec3f(0.6));
+        var d = (pc - e.pos.xyz) / max(e.size.xyz, vec3f(0.6));
+        if (e.r0.w > 0.5) {
+            let dw = pc - e.pos.xyz;
+            d = vec3f(dot(e.r0.xyz, dw), dot(e.r1.xyz, dw), dot(e.r2.xyz, dw)) / max(e.size.xyz, vec3f(0.6));
+        }
         let dist = shape_dist(d, e.flags.x, e.size.w);
         if (dist >= 1.0) { continue; }
         let hollow = e.extra.x;
@@ -256,7 +317,21 @@ fn emit_forces(@builtin(global_invocation_id) g: vec3u) {
             m = 1.0 - abs(dist - (1.0 - hollow * 0.5)) / (hollow * 0.5);
         }
         if (e.chaos.x > 0.0) {
-            let nz = vnoise(wp * e.chaos.y * 6.0 + vec3f(0.0, -t * e.chaos.z * 3.0, t * e.chaos.z));
+            var q = wp * e.chaos.y * 6.0 + vec3f(0.0, -t * e.chaos.z * 3.0, t * e.chaos.z);
+            if (any(e.ch3.xyz != vec3f(0.0))) { q += e.ch3.xyz; }
+            var nz = vnoise(q);
+            if (e.ch2.x > 1.5) {
+                var amp = 1.0;
+                var sum = 0.0;
+                var norm = 0.0;
+                for (var o = 0; o < i32(clamp(e.ch2.x, 1.0, 8.0)); o++) {
+                    sum += vnoise(q) * amp;
+                    norm += amp;
+                    amp *= e.ch2.z;
+                    q *= e.ch2.y;
+                }
+                nz = sum / max(norm, 1e-6);
+            }
             m *= clamp(1.0 - e.chaos.x * (1.4 * nz - 0.2), 0.0, 1.0);
         }
         m *= e.extra.y; // fade (particles near the end of their life)
@@ -267,7 +342,13 @@ fn emit_forces(@builtin(global_invocation_id) g: vec3u) {
         let jitter = curl_noise(wp * 5.0 + vec3f(t * 3.0, -t * 4.0, t * 2.0)) * 0.15 * e.vel.w * scale;
         v = vec4f(v.xyz + (e.vel.xyz * m + jitter) * 0.1 * dt, v.w);
         if (e.chaos.w > 0.0) {
-            v = vec4f(v.xyz + normalize(d + vec3f(1e-4)) * e.chaos.w * 0.05 * m * scale, v.w);
+            var push = e.chaos.w;
+            if (e.pn.x > 0.0) {
+                // Pressure random: the push varies through space and time
+                let pn = vnoise(pc * e.pn.y + vec3f(e.pn.z, e.pn.z * 0.7, t * e.pn.w));
+                push *= max(1.0 + e.pn.x * (pn * 2.0 - 1.0), 0.0);
+            }
+            v = vec4f(v.xyz + normalize(d + vec3f(1e-4)) * push * 0.05 * m * scale, v.w);
         }
     }
     // buoyancy and wind
@@ -280,7 +361,7 @@ fn emit_forces(@builtin(global_invocation_id) g: vec3u) {
     }
     // Force nodes
     if (prm.d.x > 0.5) {
-        v = vec4f(v.xyz + forces_at(pc, wp, t) * 0.02 * dt * scale, v.w);
+        v = vec4f(v.xyz + forces_at(pc, wp, t, v.xyz) * 0.02 * dt * scale, v.w);
     }
     vel0[i] = v;
     sca0[i] = s;
@@ -524,14 +605,31 @@ fn shadow_pass(@builtin(global_invocation_id) g: vec3u) {
     if (sca0[idx(vec3i(g))].y < 1e-4) { shadow[idx(vec3i(g))] = 1.0; return; }
     var p = vec3f(g);
     let n = vec3f(dims() - 1);
-    let stepc = max(1.5, f32(dims().x) / 40.0); // reach across the grid at any resolution
+    var stepc = max(1.5, f32(dims().x) / 40.0); // reach across the grid at any resolution
+    if (prm.l2.x != 1.0) { stepc *= prm.l2.x; }
     var acc = 0.0;
-    for (var k = 0; k < 64; k++) {
+    for (var k = 0; k < i32(prm.l2.y); k++) {
         p += prm.l.xyz * stepc;
         if (any(p < vec3f(0.0)) || any(p > n)) { break; }
+        if (prm.l2.z > 0.5 && in_caster(p)) { acc += 50.0; break; }
         acc += s_sca0(p).y * (stepc / 1.5);
     }
     shadow[idx(vec3i(g))] = exp(-acc * prm.l.w);
+}
+
+/// Inside an emitter shape marked as a shadow caster? (added after 0.4)
+fn in_caster(p: vec3f) -> bool {
+    for (var k = 0u; k < prm.n.w; k++) {
+        let e = prm.em[k];
+        if (e.ch2.w < 0.5) { continue; }
+        var d = (p - e.pos.xyz) / max(e.size.xyz, vec3f(0.6));
+        if (e.r0.w > 0.5) {
+            let dw = p - e.pos.xyz;
+            d = vec3f(dot(e.r0.xyz, dw), dot(e.r1.xyz, dw), dot(e.r2.xyz, dw)) / max(e.size.xyz, vec3f(0.6));
+        }
+        if (shape_dist(d, e.flags.x, e.size.w) < 1.0) { return true; }
+    }
+    return false;
 }
 
 // Copy (temperature, smoke, light, fuel) into the 3D texture the renderer samples.
@@ -541,9 +639,24 @@ fn pack(@builtin(global_invocation_id) g: vec3u) {
     let i = idx(vec3i(g));
     let s = sca0[i];
     textureStore(vol, vec3i(g), vec4f(s.x, s.y, shadow[i], s.z));
+    textureStore(vol2, vec3i(g), vec4f(s.w, 0.0, 0.0, 0.0));
     if (s.x > 0.02 || s.y > 0.002) {
         let b = g / 8u;
         let nb = (prm.n.xyz + 7u) / 8u;
         atomicStore(&occ[b.x + nb.x * (b.y + nb.y * b.z)], 1u);
+    }
+}
+
+// ---- Histograms for the Shading node (added after 0.4; reads the grid, changes nothing) ----
+@compute @workgroup_size(4, 4, 4)
+fn histogram(@builtin(global_invocation_id) g: vec3u) {
+    let c = vec3i(g * 2u);
+    if (any(c >= dims())) { return; }
+    let s = sca0[idx(c)];
+    if (s.x > 0.01) {
+        atomicAdd(&hist[u32(clamp((s.x * 1000.0 + 300.0) / 10000.0 * 64.0, 0.0, 63.0))], 1u);
+    }
+    if (s.y > 0.001) {
+        atomicAdd(&hist[64u + u32(clamp(s.y / 2.0 * 64.0, 0.0, 63.0))], 1u);
     }
 }

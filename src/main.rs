@@ -251,20 +251,35 @@ fn domain_of(simn: &Node) -> (Domain, bool) {
     }
     let n = [ui_n[0] as usize, ui_n[2] as usize, ui_n[1] as usize]; // sim axes: x, up, z
     let ext = [n[0] as f32 * h, n[1] as f32 * h, n[2] as f32 * h];
+    let z = domain_zero(simn, ext);
+    let bp = ui2sim(simn.c("Bounds Position"));
+    (Domain { n, h, origin: [z[0] + bp[0], z[1] + bp[1], z[2] + bp[2]] }, reduced)
+}
+
+/// Where the box's min corner sits before the Bounds Position offset (sim axes), from the
+/// Zero position choices (Center / Min / Max). UI Y is mirrored into sim z.
+fn domain_zero(simn: &Node, ext: V3) -> V3 {
     let zero = |choice: usize, len: f32, mirrored: bool| match (choice, mirrored) {
-        (1, false) => 0.0,
-        (2, false) => -len,
-        (1, true) => -len,
-        (2, true) => 0.0,
+        (1, false) | (2, true) => 0.0,
+        (2, false) | (1, true) => -len,
         _ => -len * 0.5,
     };
-    let bp = ui2sim(simn.c("Bounds Position"));
-    let origin = [
-        zero(simn.ch("Zero position on X"), ext[0], false) + bp[0],
-        zero(simn.ch("Zero position on Z"), ext[1], false) + bp[1],
-        zero(simn.ch("Zero position on Y"), ext[2], true) + bp[2],
-    ];
-    (Domain { n, h, origin }, reduced)
+    [
+        zero(simn.ch("Zero position on X"), ext[0], false),
+        zero(simn.ch("Zero position on Z"), ext[1], false),
+        zero(simn.ch("Zero position on Y"), ext[2], true),
+    ]
+}
+
+/// Set the simulation box from its min corner and size (sim axes, metres): the voxel count
+/// follows the size at the current voxel size, Bounds Position follows the corner.
+fn set_domain_box(simn: &mut Node, origin: V3, ext: V3) {
+    let h = (simn.f("Voxel size") / 100.0).max(1e-4);
+    let n = ext.map(|e| (e / h).round().clamp(8.0, 512.0));
+    let ext = n.map(|c| c * h);
+    let z = domain_zero(simn, ext);
+    simn.set("Voxel count", Val::V([n[0], n[2], n[1]]));
+    simn.set("Bounds Position", Val::V(sim2ui([origin[0] - z[0], origin[1] - z[1], origin[2] - z[2]])));
 }
 
 /// Emitter positions (sim axes) in graph order, for emitter motion between frames.
@@ -984,6 +999,8 @@ struct App {
     lock_camera: bool,
     show_axes: bool,
     show_bounds: bool,
+    /// Dragging a face of the simulation box: (face 0..6, min corner, size), sim axes.
+    bounds_drag: Option<(usize, V3, V3)>,
     playing: bool,
     show_home: bool,
     home: home::Home,
@@ -1055,6 +1072,7 @@ impl App {
             lock_camera: false,
             show_axes: true,
             show_bounds: false,
+            bounds_drag: None,
             playing: true,
             show_home: start_home,
             home: home::Home::new(),
@@ -1141,6 +1159,18 @@ impl App {
 
     fn project_name(&self) -> String {
         self.project.as_ref().and_then(|p| p.file_stem()).map_or("Untitled".to_string(), |s| s.to_string_lossy().to_string())
+    }
+
+    /// Select the Simulation node on its Domain tab: the bounds box and its handles appear.
+    fn edit_bounds(&mut self) {
+        if let Some(i) = self.graph.first(Kind::Simulation) {
+            self.graph.selected = Some(i);
+            self.graph.details_tab = 0;
+            if let Some(p) = self.graph.nodes[i].params.iter().find(|p| p.section == "Domain") {
+                self.graph.active_section = p.section;
+            }
+            self.view_tab = 0;
+        }
     }
 
     /// Simulation › Time Control › Looping Mode
@@ -1573,6 +1603,10 @@ impl App {
                         self.set_looping(lp);
                     }
                     ui.separator();
+                    if ui.button("Edit simulation bounds…").on_hover_text("Shows the box in the viewport: drag its dots to resize it").clicked() {
+                        self.edit_bounds();
+                        ui.close_menu();
+                    }
                     if ui.button("Browse presets…").clicked() {
                         self.home.page = home::Page::Presets;
                         self.show_home = true;
@@ -1680,6 +1714,24 @@ impl App {
         let proj = |p: V3| b.cam.project(p, aspect).map(|s| pos2(rect.min.x + s[0] * rect.width(), rect.min.y + s[1] * rect.height()));
         let painter = ui.painter_at(rect);
         let em = self.emitter_index();
+        // simulation bounds: shown with the Simulation node selected, editable by dragging a face handle
+        let sim_sel = self.graph.selected.is_some_and(|i| self.graph.nodes.get(i).is_some_and(|n| n.kind == Kind::Simulation));
+        let (box_o, box_s) = match self.bounds_drag {
+            Some((_, o, s)) => (o, s),
+            None => (b.dom.origin, b.dom.n.map(|c| c as f32 * b.dom.h)),
+        };
+        let face = |k: usize| {
+            let (a, side) = (k / 2, (k % 2) as f32);
+            let mut c = [box_o[0] + box_s[0] * 0.5, box_o[1] + box_s[1] * 0.5, box_o[2] + box_s[2] * 0.5];
+            c[a] = box_o[a] + box_s[a] * side;
+            c
+        };
+        let handles: Vec<(usize, Pos2)> = if sim_sel && self.view_tab == 0 { (0..6).filter_map(|k| proj(face(k)).map(|p| (k, p))).collect() } else { vec![] };
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let hot = pointer.and_then(|p| handles.iter().filter(|(_, h)| h.distance(p) < 10.0).min_by(|a, b| a.1.distance(p).total_cmp(&b.1.distance(p))).map(|h| h.0));
+        if hot.is_some() || self.bounds_drag.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
 
         if self.view_tab == 0 {
             // arrows of the selected force (Visual › Enable gizmo) and its mask outline
@@ -1732,13 +1784,27 @@ impl App {
                     }
                 }
             }
-            if self.show_bounds || b.sim_gizmo {
-                let (o, s) = (self.sim.origin(), self.sim.size());
+            if self.show_bounds || b.sim_gizmo || sim_sel {
+                let (o, s) = (box_o, box_s);
                 let c = |i: usize| [o[0] + s[0] * (i & 1) as f32, o[1] + s[1] * ((i >> 1) & 1) as f32, o[2] + s[2] * ((i >> 2) & 1) as f32];
+                let line = Stroke::new(1.0, if sim_sel { Color32::from_rgb(200, 160, 60) } else { Color32::from_gray(70) });
                 for (a, bb) in [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)] {
                     if let (Some(p), Some(q)) = (proj(c(a)), proj(c(bb))) {
-                        painter.line_segment([p, q], Stroke::new(1.0, Color32::from_gray(70)));
+                        painter.line_segment([p, q], line);
                     }
+                }
+                // face handles, coloured by axis (sim x = X red, sim y = Z up blue, sim z = Y green)
+                let dragged = self.bounds_drag.map(|d| d.0);
+                for &(k, p) in &handles {
+                    let col = [Color32::from_rgb(235, 60, 70), Color32::from_rgb(60, 130, 255), Color32::from_rgb(60, 200, 80)][k / 2];
+                    let big = hot == Some(k) || dragged == Some(k);
+                    painter.circle(p, if big { 7.0 } else { 5.0 }, col, Stroke::new(1.5, Color32::WHITE));
+                }
+                if sim_sel {
+                    let ui_size = [s[0], s[2], s[1]];
+                    let txt = format!("Bounds {:.2} × {:.2} × {:.2} m", ui_size[0], ui_size[1], ui_size[2]);
+                    let hint = if self.bounds_drag.is_some() { txt } else { format!("{txt} · drag a dot to resize") };
+                    painter.text(rect.left_bottom() + vec2(90.0, -12.0), egui::Align2::LEFT_BOTTOM, hint, egui::FontId::proportional(12.0), TEXT);
                 }
             }
             // emitter shape + move gizmo
@@ -1816,10 +1882,43 @@ impl App {
         let (_, f, r, u) = b.cam.basis();
         let _ = f;
         let delta = resp.drag_delta();
+        // dragging a bounds handle moves that face along its axis; applied when released
+        if resp.drag_started_by(egui::PointerButton::Primary) {
+            if let Some(k) = hot {
+                self.bounds_drag = Some((k, box_o, box_s));
+            }
+        }
+        if let Some((k, mut o, mut s)) = self.bounds_drag {
+            let a = k / 2;
+            let c = face(k);
+            let mut tip = c;
+            tip[a] += 0.1;
+            if let (Some(p0), Some(p1)) = (proj(c), proj(tip)) {
+                let dir = p1 - p0; // screen pixels per 10 cm along the axis
+                let along = delta.dot(dir) / dir.length_sq().max(1e-3) * 0.1;
+                let min = 8.0 * b.dom.h;
+                if k % 2 == 1 {
+                    s[a] = (s[a] + along).max(min);
+                } else {
+                    let d = along.min(s[a] - min);
+                    o[a] += d;
+                    s[a] -= d;
+                }
+                self.bounds_drag = Some((k, o, s));
+            }
+            if !resp.dragged() {
+                if let Some(si) = self.graph.first(Kind::Simulation) {
+                    set_domain_box(&mut self.graph.nodes[si], o, s);
+                }
+                self.bounds_drag = None;
+            }
+        }
         let orbit = resp.dragged_by(egui::PointerButton::Secondary)
             || resp.dragged_by(egui::PointerButton::Middle)
-            || (resp.dragged_by(egui::PointerButton::Primary) && (self.tool == 1 || self.view_tab == 1));
-        if orbit && !self.lock_camera {
+            || (resp.dragged_by(egui::PointerButton::Primary) && (self.tool == 1 || self.view_tab == 1) && self.bounds_drag.is_none());
+        if self.bounds_drag.is_some() {
+            // the handle drag owns the mouse
+        } else if orbit && !self.lock_camera {
             if let Some(c) = self.camera_node() {
                 let (yaw, pitch) = (c.f("Yaw") - delta.x * 0.4, (c.f("Pitch") + delta.y * 0.3).clamp(-89.0, 89.0));
                 c.set("Yaw", Val::F(((yaw + 180.0).rem_euclid(360.0)) - 180.0));
@@ -1869,6 +1968,10 @@ impl App {
             });
             if ui.button("Reset camera").clicked() {
                 self.set_view(0);
+                ui.close_menu();
+            }
+            if ui.button("Edit simulation bounds").clicked() {
+                self.edit_bounds();
                 ui.close_menu();
             }
             ui.checkbox(&mut self.lock_camera, "Lock camera");
@@ -2249,10 +2352,13 @@ impl eframe::App for App {
 
         // simulate
         let b = self.built();
-        if b.dom.n != self.sim.dom.n || (b.dom.h - self.sim.dom.h).abs() > 1e-7 || std::mem::take(&mut self.graph.import_request) {
+        // a new grid size restarts the simulation, but only once the mouse is released (no restart per pixel of a drag)
+        let holding = ctx.input(|i| i.pointer.any_down());
+        let resized = b.dom.n != self.sim.dom.n || (b.dom.h - self.sim.dom.h).abs() > 1e-7;
+        if (resized && !holding) || std::mem::take(&mut self.graph.import_request) {
             self.sim = GpuSim::new(&self.gpu, b.dom);
             self.load_imports(&b);
-        } else if b.dom.origin != self.sim.dom.origin {
+        } else if !resized && b.dom.origin != self.sim.dom.origin {
             // moving the bounds doesn't restart the simulation
             self.sim.dom.origin = b.dom.origin;
         }

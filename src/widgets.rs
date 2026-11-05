@@ -354,15 +354,29 @@ pub fn special_row(ui: &mut Ui, key: &str, label: &str, n: &mut Node) -> bool {
         label_cell(ui, label);
         match key {
             "domain_info" => {
-                let c = n.c("Voxel count").map(|x| x.max(1.0).round() as u64);
-                let total = c[0] * c[1] * c[2];
-                let w = n.domain_width();
-                ui.label(egui::RichText::new(format!(
-                    "{} x {} x {} = {} ({:.2} million) voxels · {:.2} x {:.2} x {:.2} m · ~{:.1} GB GPU",
-                    c[0], c[1], c[2], total, total as f64 / 1e6,
-                    w, w * c[1] as f32 / c[0] as f32, w * c[2] as f32 / c[0] as f32,
-                    total as f64 * 84.0 / 1e9
-                )).color(TEXT));
+                // the bounds size in metres; changing it changes the voxel count (detail stays the same)
+                let vc = n.c("Voxel count");
+                let h = n.f("Voxel size") / 100.0;
+                let mut size = vc.map(|x| x.round() * h);
+                let mut changed = false;
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        for (k, axis) in ["X", "Y", "Z"].iter().enumerate() {
+                            ui.label(egui::RichText::new(*axis).color(DIM));
+                            let dv = egui::DragValue::new(&mut size[k]).speed(0.01).range(8.0 * h..=512.0 * h).suffix(" m").fixed_decimals(2);
+                            changed |= ui.add_sized([80.0, 18.0], dv).on_hover_text("Size of the simulation bounds. Or drag the handles on the box in the viewport.").changed();
+                        }
+                    });
+                    let c = vc.map(|x| x.max(1.0).round() as u64);
+                    let total = c[0] * c[1] * c[2];
+                    ui.label(egui::RichText::new(format!(
+                        "{} x {} x {} = {:.2} million voxels · ~{:.1} GB GPU",
+                        c[0], c[1], c[2], total as f64 / 1e6, total as f64 * 84.0 / 1e9
+                    )).color(DIM).small());
+                });
+                if changed {
+                    n.set("Voxel count", Val::V(size.map(|s| (s / h).round().clamp(8.0, 512.0))));
+                }
             }
             "hist_temp" | "hist_smoke" => {
                 let h: Histograms = ui.ctx().data(|d| d.get_temp(egui::Id::new(HIST_ID))).unwrap_or_default();

@@ -640,10 +640,20 @@ fn pack(@builtin(global_invocation_id) g: vec3u) {
     let s = sca0[i];
     textureStore(vol, vec3i(g), vec4f(s.x, s.y, shadow[i], s.z));
     textureStore(vol2, vec3i(g), vec4f(s.w, 0.0, 0.0, 0.0));
-    if (s.x > 0.02 || s.y > 0.002) {
-        let b = g / 8u;
+    // A brick (8^3 voxels) the renderer may skip must really be empty: thin haze counts
+    // (0.4 skipped smoke below 0.002, which cut wide hazy areas into blocks), and a voxel on a
+    // brick's border also marks the neighbour brick, whose smooth samples read it.
+    if (s.x > 0.002 || s.y > 1e-5 || s.z > 1e-4) {
         let nb = (prm.n.xyz + 7u) / 8u;
-        atomicStore(&occ[b.x + nb.x * (b.y + nb.y * b.z)], 1u);
+        let lo = vec3u(max(vec3i(g) - 1, vec3i(0))) / 8u;
+        let hi = min(g + 1u, prm.n.xyz - 1u) / 8u;
+        for (var bz = lo.z; bz <= hi.z; bz++) {
+            for (var by = lo.y; by <= hi.y; by++) {
+                for (var bx = lo.x; bx <= hi.x; bx++) {
+                    atomicStore(&occ[bx + nb.x * (by + nb.y * bz)], 1u);
+                }
+            }
+        }
     }
 }
 

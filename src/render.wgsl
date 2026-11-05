@@ -213,6 +213,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let ds = cell * step;
     if (t1 > t0 && !on(F_NOVOLUME)) {
         var t = t0 + ds * ign(gid.xy, r.n.w);
+        let t_first = t;
         let lit = (flags & 1u) != 0u;
         let has_sun = (flags & 16u) != 0u;
         let brick = cell * 8.0;
@@ -250,7 +251,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             }
             // skip empty space a brick at a time
             if (brick_empty(uvw)) {
-                t += max(brick * 0.5, ds);
+                // jump to where the ray leaves this empty brick, landing on the ray's own step
+                // pattern (0.4 jumped half a brick, which could land past the start of the next,
+                // filled brick and cut its edge off)
+                let bc = floor(clamp(uvw * vec3f(r.n.xyz), vec3f(0.0), vec3f(r.n.xyz - 1u)) / 8.0);
+                let bmin = o + bc * brick;
+                let tb0 = (bmin - ro) * inv;
+                let tb1 = (bmin + vec3f(brick) - ro) * inv;
+                let texit = min(min(max(tb0.x, tb1.x), max(tb0.y, tb1.y)), max(tb0.z, tb1.z));
+                t = max(t + ds, t_first + ceil((texit - t_first) / ds) * ds);
                 continue;
             }
             // fine detail: nudge the lookup by small animated noise (finer than one cell)
@@ -268,10 +277,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 let mode = r.x[8].w;
                 let st = r.x[6].w;
                 if (on(F_POST) && mode > 1.5 && mode < 2.5) { s = vec4f(max(s.xy + (s.xy - n6.xy) * st * 2.0, vec2f(0.0)), s.zw); }
-                if (on(F_POST) && mode > 2.5) { s = vec4f(mix(s.xy, max(s.xy, n6.xy * 1.6), st), s.zw); }
+                // dilate: grow into empty neighbours without brightening what is already there
+                if (on(F_POST) && mode > 2.5) { s = vec4f(mix(s.xy, max(s.xy, n6.xy), st), s.zw); }
                 if (on(F_SHARPEN)) {
-                    s.y = max(s.y + (s.y - n6.y) * (r.x[9].x - 1.0), 0.0);
-                    s.x = max(s.x + (s.x - n6.x) * (r.x[9].z - 1.0), 0.0);
+                    // unsharp mask: crisper edges, same overall density and heat (100% = off)
+                    s.y = max(s.y + (s.y - n6.y) * (r.x[9].x - 1.0) * 0.5, 0.0);
+                    s.x = max(s.x + (s.x - n6.x) * (r.x[9].z - 1.0) * 0.5, 0.0);
                 }
             }
             let sm_raw = max(s.y, 0.0);
@@ -296,7 +307,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             var k = clamp((tk - r.tk.x) / max(r.tk.y - r.tk.x, 1.0), 0.0, 1.0);
             if (on(F_NOCLAMP)) { k = max((tk - r.tk.x) / max(r.tk.y - r.tk.x, 1.0), 0.0); }
             if (on(F_RAMP)) { k = pow(k, r.x[0].x); }
-            if (on(F_SHARPEN)) { k = clamp(k + (k - k * k) * (r.x[9].y - 1.0), 0.0, 4.0); }
             k *= kmod * vm;
             if (on(F_NOFLAMES)) { k = 0.0; }
             kmax = max(kmax, k);

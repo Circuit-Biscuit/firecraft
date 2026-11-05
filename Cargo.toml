@@ -1,6 +1,6 @@
 [package]
 name = "firecraft"
-version = "0.4.0"
+version = "0.6.0"
 edition = "2024"
 description = "Real-time fire, smoke and explosion simulator with a node graph"
 authors = ["Circuit Biscuit"]

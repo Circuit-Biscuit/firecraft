@@ -18,7 +18,7 @@ A real-time volumetric effects tool, built in pure Rust for Windows, macOS and L
 
 <sub><i>Six built-in presets simulating in real time — campfire, mushroom cloud, magic portal, spirit swirl, gas burner, ground explosion. Every frame is a live 3D fluid simulation, not a sprite.</i></sub>
 
-[Simulate](#simulate-fire-the-way-it-actually-moves) · [Nodes](#a-node-graph-for-every-part-of-the-effect) · [Presets](#44-presets-no-two-alike) · [Render](#render-quality-that-holds-up-close) · [Export](#export) · [Downloads](#downloads) · [Build](#quick-start) · [Release](#releasing-a-new-version)
+[Simulate](#simulate-fire-the-way-it-actually-moves) · [Nodes](#a-node-graph-for-every-part-of-the-effect) · [Settings](#every-setting-in-its-own-tab) · [Presets](#44-presets-no-two-alike) · [Render](#render-quality-that-holds-up-close) · [Export](#export) · [Downloads](#downloads) · [Build](#quick-start) · [Release](#releasing-a-new-version) · [Changelog](CHANGELOG.md)
 
 </div>
 
@@ -62,6 +62,27 @@ Right-click the graph for the full library — searchable, grouped like a pro to
 
 Everything you expect from a desktop app is there: **undo / redo**, cut / copy / paste / duplicate nodes, multi-select and box select, right-click menus on nodes, settings, viewport and timeline, favourites and randomise for settings, and projects you can save, reopen and double-click.
 
+## Every setting in its own tab
+
+<a href="docs/screenshot-shading.png"><img src="docs/screenshot-shading.png" width="100%" alt="Shading node, Flames tab, with a live temperature histogram"></a>
+
+<sub><i>The Shading node's Flames tab, with a live histogram of the temperatures in the simulation.</i></sub>
+
+Nodes show their settings in tabs, like the big tools do. A new setting changes nothing until you move it, so the fire keeps its look until you decide otherwise.
+
+| Node | Tabs |
+|---|---|
+| **Fire Color Gradient** | Gradient editor: click to add a stop, drag to move, right-click to remove. RGB, Linear RGB, HSV or OKLab blending. Import and export `.fcgrad` files or a PNG strip |
+| **Shading** | Lighting · Scattering · Emissive masking · Flames · Smoke · Fuel · Rendering, with live temperature and smoke histograms |
+| **Scene** | Tonemapping (None, Reinhard, ACES, Filmic, Uchimura, AgX) · Colors (bloom, swizzle) · Vignetting · Style (ten rendering styles, quantization) |
+| **Volume Processing** | Post process (motion blur, sharpen, dilate) · Post modulation · Slicing mask |
+| **Render** | Render Passes · Export · Render Settings |
+| **Fire Chaos / Emission Chaos** | General (scale, seed, octaves, lacunarity, gain, bias, curl) · Transform (rotation) · Masking (temperature, smoke and velocity masks) · Visual (force arrows in the viewport) |
+| **Emitter: Volume** | Activity · Transform (rotation) · Emission · Pressure (random pressure) · Forces (velocity transfer) · Visuals (show emitter, shadow caster, emit light) |
+| **Fire Shape** | General (fill motion gaps) · Transform (rotation) |
+
+The **Simulation** node is the same as in 0.4.0. Every preset starts at High quality with 10 pressure iterations and 2 substeps, 100% shadowing sharpness, Dilate post processing and raymarch sharpening.
+
 ## 44 presets, no two alike
 
 <a href="docs/screenshot-presets.png"><img src="docs/screenshot-presets.png" width="100%" alt="The preset gallery"></a>
@@ -86,7 +107,9 @@ Candle flame · wildfire line · fire ring · fire tornado · burning wall · oi
 - **Image sequence** — one PNG per frame at any size.
 - **Flipbook** — every frame tiled into one sprite sheet, ready for game engines.
 - **Volume** — density, temperature and fuel as 3D grids (`.vol`), and back in through the Import node.
-- Export from the **Export tab** or from **Export nodes** in the graph; exports run frame by frame without freezing the app.
+- **Render passes**: Render All, Alpha, Emission, Scattering, Temperature, Density, Fuel or Depth. Each is written as RGBA, RGB or a single channel, and can be HDR.
+- **PNG, EXR or TGA**, with filename patterns such as `$(project)_$(safename)`. You set the frame range, stride and numbering, and lay out the flipbook on a visual grid.
+- Export with **Export Now** on the Render node, from the **Export tab**, or from **Export nodes** in the graph. Exports run frame by frame without freezing the app.
 
 ## Fast, native, yours
 
@@ -103,7 +126,9 @@ Candle flame · wildfire line · fire ring · fire tornado · burning wall · oi
 | Viewport, lighting, shadows, HQ refinement | ✅ |
 | Presets (44, pre-rendered pictures) | ✅ |
 | Undo / redo, clipboard, project files | ✅ |
-| Image sequence · flipbook · `.vol` volume export, volume import | ✅ |
+| Image sequence · flipbook (PNG · EXR · TGA, render passes) · `.vol` volume export, volume import | ✅ |
+| Node settings in tabs: gradients, histograms, tonemapping, styles, force gizmos | ✅ |
+| *Import control* settings | ⬜ shown, not yet active |
 | Windows installer · macOS universal app · Linux AppImage, automatic releases | ✅ |
 | MIDI modulator | ✅ Windows · ⬜ macOS / Linux |
 | OpenVDB (`.vdb`) export | ⬜ (`.vol` for now) |
@@ -159,7 +184,7 @@ On Linux install the windowing libraries first: `sudo apt install libxkbcommon-d
 Useful commands:
 
 ```sh
-cargo test                                   # unit tests (one test renders on the GPU)
+cargo test                                   # unit tests, incl. GPU renders compared pixel by pixel with 0.4.0
 cargo test render_preset_pictures -- --ignored   # re-render the built-in preset pictures (~6 min)
 cargo run --release -- my_project.fcproj     # open a project
 cargo run --release -- --screenshot out.png  # render ~120 frames, save the window, exit
@@ -172,7 +197,8 @@ cargo run --release -- --screenshot out.png  # render ~120 frames, save the wind
 | App, panels, menus | `src/main.rs` | eframe / egui UI, viewport, timeline, exports, undo, shortcuts |
 | Node graph | `src/graph.rs` | node library, ports and wiring, settings panel, project files |
 | Simulation | `src/sim.wgsl`, `src/gpu.rs` | GPU compute: MAC-grid fluid, combustion, forces, colliders, pressure solve |
-| Rendering | `src/render.wgsl` | GPU ray marcher with shadows, lights, sparks, temporal refinement |
+| Rendering | `src/render.wgsl`, `src/post.wgsl` | GPU ray marcher with shadows, lights and sparks; tonemapping, bloom, styles and render passes |
+| Setting widgets | `src/widgets.rs`, `src/noise.rs` | gradient editor, render passes, histograms, noise preview, export helpers |
 | Presets | `src/presets.rs`, `assets/presets/` | preset graphs and their pre-rendered pictures |
 | Modulators | `src/modulate.rs` | values over time and MIDI input |
 | Home screen | `src/home.rs` | presets gallery, recent projects |
@@ -185,10 +211,10 @@ Pure Rust on [wgpu](https://wgpu.rs) (DirectX 12 · Vulkan · Metal) and [egui](
 Releases are automatic. Bump the version and push:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\bump.ps1 0.5.0
+powershell -ExecutionPolicy Bypass -File scripts\bump.ps1 0.7.0
 ```
 
-(or edit `version` in `Cargo.toml` and push to `main`). The **Release** workflow notices the new version, builds the Windows installer, the macOS universal `.dmg` and the Linux AppImage, and publishes them as release `v0.5.0` with checksums — about 15 minutes. Pushes that don't change the version are built and tested by **CI** on all three platforms but not released.
+(or edit `version` in `Cargo.toml` and push to `main`). First add a `## [0.7.0]` section to [CHANGELOG.md](CHANGELOG.md): it becomes the release notes. The **Release** workflow notices the new version, builds the Windows installer, the macOS universal `.dmg` and the Linux AppImage, and publishes them as release `v0.7.0` with checksums — about 15 minutes. Pushes that don't change the version are built and tested by **CI** on all three platforms but not released.
 
 First-time setup of the repository is a single command: `scripts\publish.ps1` (creates the private repository under the organization and pushes).
 

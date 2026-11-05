@@ -5,17 +5,19 @@ mod gpu;
 mod graph;
 mod home;
 mod modulate;
+mod noise;
 mod preset_thumbs;
 mod presets;
 mod render;
 mod sim;
+mod widgets;
 
 use eframe::egui::{self, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, pos2, vec2};
 use eframe::{egui_wgpu, wgpu};
 use gpu::{Gpu, GpuSim, Target};
-use graph::{ACCENT, Cmd, DIM, Graph, Kind, Node, TEXT, Val, template};
-use render::{Camera, Shade, V3};
-use sim::{Burst, Chaos, Emitter, FPS, Force, Particles, Shape, ShapeInst, SimParams};
+use graph::{ACCENT, Cmd, DIM, Graph, Kind, Node, RPass, TEXT, Val, template};
+use render::{Camera, Post, Shade, V3};
+use sim::{Burst, Chaos, Domain, Emitter, FPS, Force, Particles, Shape, ShapeInst, SimParams, mat_mul, rotation_ui};
 use std::path::PathBuf;
 
 const MENU_BG: Color32 = Color32::from_rgb(37, 40, 41);
@@ -79,20 +81,59 @@ fn sim2ui(s: V3) -> V3 {
 #[derive(Clone)]
 struct Built {
     sp: SimParams,
-    res: usize,
-    domain: f32,
+    dom: Domain,
     shade: Shade,
+    post: Post,
     cam: Camera,
     duration: u32,
-    out: [usize; 2],
-    cols: usize,
-    fstep: u32,
+    /// The Render node (export settings).
+    render: Node,
+    /// Restart at the render duration (Simulation › Time Control › Looping Mode).
+    looping: bool,
+    /// Show the simulation bounds (Simulation › Visual › Enable gizmo).
+    sim_gizmo: bool,
+    /// Graph node of each entry in `sp.forces` (for the viewport force arrows).
+    force_nodes: Vec<usize>,
     /// Import nodes: (file, density scale, temperature scale).
     imports: Vec<(String, f32, f32)>,
+    /// Grid was reduced to fit the graphics card.
+    reduced: bool,
 }
 
+/// Direction and relative size of a force at a point (sim coordinates), for the viewport arrows.
+/// ponytail: approximates the shader's falloffs and ignores field masks; exact for Line and Noise.
+fn force_vec(f: &Force, p: V3, t: f32) -> V3 {
+    let len = |a: V3| render::dot(a, a).sqrt();
+    let d = [p[0] - f.pos[0], p[1] - f.pos[1], p[2] - f.pos[2]];
+    let r = len(d).max(1e-4);
+    let axis = render::norm(mat_mul(&f.rot, f.dir));
+    let v = match f.kind {
+        0 => axis,
+        1 => d.map(|x| -x / r * (1.0 - r / f.radius.max(0.01)).max(0.0)),
+        3 => {
+            let np = noise::NoiseParams { freq: f.scale, octaves: f.noise[0] as u32, lacunarity: f.noise[1], gain: f.noise[2], curl: f.noise[3] > 0.5, seed: f.seed, speed: f.speed };
+            let v = noise::fbm(&np, p, t);
+            [v[0] + f.bias[0], v[1] + f.bias[1], v[2] + f.bias[2]]
+        }
+        4 if f.extra as u32 == 3 => [0.0, 1.0, 0.0],
+        4 if f.extra as u32 <= 1 => d.map(|x| x / r * if f.extra == 0.0 { 1.0 } else { -1.0 }),
+        _ => {
+            // swirl around the axis (toroidal, vector-field swirl, vorticles)
+            let c = render::cross(axis, d);
+            c.map(|x| x / len(c).max(1e-4))
+        }
+    };
+    v.map(|x| x * f.strength)
+}
+
+/// Emission chaos (a Force: Noise wired into an emitter) in shader units.
 fn chaos_of(n: &Node) -> Chaos {
-    Chaos { strength: n.f("Strength"), scale: n.f("Scale"), speed: n.f("Speed") }
+    Chaos { strength: n.f("Amplitude") / 166.7, scale: 50.0 / n.f("Scale").max(0.5), speed: n.f("Animation speed") * 0.5 }
+}
+
+/// Shape: Noise node in shader units.
+fn shape_noise_of(n: &Node) -> Chaos {
+    Chaos { strength: n.f("Strength"), scale: n.f("Scale") * 6.0, speed: n.f("Speed") }
 }
 
 /// UI half-size (X, Y, Z-up) to sim axes (x, up, z).
@@ -138,7 +179,7 @@ fn shapes_of(g: &Graph, i: usize, depth: u32) -> Vec<ShapeInst> {
                 .collect()
         }
         Kind::ShapeNoise => {
-            let ch = chaos_of(n);
+            let ch = shape_noise_of(n);
             child("Shape").into_iter().map(|mut s| {
                 s.noise = Some(ch.clone());
                 s
@@ -188,12 +229,55 @@ fn blackbody(k: f32, sat: f32) -> V3 {
     let gr = if t <= 66.0 { (99.47 * t.ln() - 161.1) / 255.0 } else { 288.1 * (t - 60.0).powf(-0.0755) / 255.0 };
     let b = if t >= 66.0 { 1.0 } else if t <= 19.0 { 0.0 } else { (138.5 * (t - 10.0).ln() - 305.0) / 255.0 };
     let c = [r, gr.clamp(0.0, 1.0), b.clamp(0.0, 1.0)];
-    // linear-ish and adjustable saturation
     let grey = (c[0] + c[1] + c[2]) / 3.0;
     c.map(|v| (grey + (v - grey) * sat).clamp(0.0, 1.0).powf(2.2))
 }
 
+/// Most voxels the solver will allocate (about 4 GB of graphics memory).
+const MAX_CELLS: f32 = 48.0e6;
+
+/// Grid, cell size and origin from the Simulation node (Domain tab).
+fn domain_of(simn: &Node) -> (Domain, bool) {
+    let vc = simn.c("Voxel count");
+    let mut ui_n = vc.map(|x| x.round().clamp(8.0, 512.0));
+    let mut h = (simn.f("Voxel size") / 100.0).max(1e-4);
+    let total = ui_n[0] * ui_n[1] * ui_n[2];
+    let reduced = total > MAX_CELLS;
+    if reduced {
+        // keep the domain's size, use fewer, larger voxels
+        let f = (MAX_CELLS / total).cbrt();
+        ui_n = ui_n.map(|x| (x * f).floor().max(8.0));
+        h /= f;
+    }
+    let n = [ui_n[0] as usize, ui_n[2] as usize, ui_n[1] as usize]; // sim axes: x, up, z
+    let ext = [n[0] as f32 * h, n[1] as f32 * h, n[2] as f32 * h];
+    let zero = |choice: usize, len: f32, mirrored: bool| match (choice, mirrored) {
+        (1, false) => 0.0,
+        (2, false) => -len,
+        (1, true) => -len,
+        (2, true) => 0.0,
+        _ => -len * 0.5,
+    };
+    let bp = ui2sim(simn.c("Bounds Position"));
+    let origin = [
+        zero(simn.ch("Zero position on X"), ext[0], false) + bp[0],
+        zero(simn.ch("Zero position on Z"), ext[1], false) + bp[1],
+        zero(simn.ch("Zero position on Y"), ext[2], true) + bp[2],
+    ];
+    (Domain { n, h, origin }, reduced)
+}
+
+/// Emitter positions (sim axes) in graph order, for emitter motion between frames.
+fn emitter_positions(g: &Graph) -> Vec<V3> {
+    g.nodes.iter().filter(|n| matches!(n.kind, Kind::Emitter | Kind::EmitterParticles)).map(|n| ui2sim(n.c("Position"))).collect()
+}
+
 fn build(g: &Graph, lit: bool, ortho: bool, step: f32) -> Built {
+    build_moving(g, None, lit, ortho, step)
+}
+
+/// `prev`: emitter positions one frame earlier (moving emitters pass their motion to the gas).
+fn build_moving(g: &Graph, prev: Option<&[V3]>, lit: bool, ortho: bool, step: f32) -> Built {
     let live = g.live();
     let find = |k: Kind| (0..g.nodes.len()).find(|&i| g.nodes[i].kind == k && live[i]);
     let first_of = |i: Option<usize>, port: &str, ks: &[Kind]| -> Option<&Node> {
@@ -201,11 +285,17 @@ fn build(g: &Graph, lit: bool, ortho: bool, step: f32) -> Built {
     };
     let sim_i = find(Kind::Simulation);
     let simn = sim_i.map(|i| &g.nodes[i]).cloned().unwrap_or_else(|| template(Kind::Simulation));
+    let (dom, reduced) = domain_of(&simn);
+    let pct = |n: &Node, k: &str| n.f(k) / 100.0;
 
     let mut emitters = vec![];
     let mut forces = vec![];
+    let mut force_nodes = vec![];
     let mut colliders = vec![];
     let mut imports = vec![];
+    let mut points = vec![];
+    let mut shown = vec![];
+    let all_emitters: Vec<usize> = (0..g.nodes.len()).filter(|&i| matches!(g.nodes[i].kind, Kind::Emitter | Kind::EmitterParticles)).collect();
     if let Some(si) = sim_i {
         for e in g.inputs(&live, si, "Emitters") {
             let n = &g.nodes[e];
@@ -218,21 +308,26 @@ fn build(g: &Graph, lit: bool, ortho: bool, step: f32) -> Built {
             if !matches!(n.kind, Kind::Emitter | Kind::EmitterParticles) || !n.b("Emitter activity") {
                 continue;
             }
+            let volume = n.kind == Kind::Emitter;
             let pos = ui2sim(n.c("Position"));
+            let rot = if volume { rotation_ui(n.c("Rotation")) } else { sim::IDENTITY };
             let mut shapes: Vec<ShapeInst> = g.sources(e, "Shapes").into_iter().flat_map(|j| shapes_of(g, j, 0)).collect();
             if shapes.is_empty() {
                 shapes.push(ShapeInst::sphere([0.0; 3], 0.22));
             }
             for s in &mut shapes {
-                for k in 0..3 {
-                    s.center[k] += pos[k];
-                }
+                let c = mat_mul(&rot, s.center);
+                s.center = [c[0] + pos[0], c[1] + pos[1], c[2] + pos[2]];
+                s.rot = rot;
             }
             // forces wired into the emitter: noise breaks up the emission, lines push it
-            let mut vel = if n.kind == Kind::Emitter { ui2sim(n.c("Initial velocity")) } else { [0.0; 3] };
+            let mut vel = if volume { ui2sim(n.c("Initial velocity")) } else { [0.0; 3] };
             let mut chaos = None;
             for j in g.sources(e, "Forces") {
                 let f = &g.nodes[j];
+                if !f.b("Force activity") {
+                    continue;
+                }
                 match f.kind {
                     Kind::ForceNoise => chaos = Some(chaos_of(f)),
                     Kind::ForceLine => {
@@ -244,7 +339,26 @@ fn build(g: &Graph, lit: bool, ortho: bool, step: f32) -> Built {
                     _ => {}
                 }
             }
-            let particles = (n.kind == Kind::EmitterParticles).then(|| Particles {
+            if volume {
+                // a moving emitter drags the gas along (Velocity transfer)
+                let order = all_emitters.iter().position(|&k| k == e);
+                if let (Some(prev), Some(o)) = (prev, order) {
+                    if let Some(p0) = prev.get(o) {
+                        for k in 0..3 {
+                            vel[k] += (pos[k] - p0[k]) * FPS;
+                        }
+                    }
+                }
+                vel = vel.map(|v| v * pct(n, "Velocity transfer"));
+                if n.b("Emit light") && n.f("Emissive light intensity") > 0.0 {
+                    let reach = shapes.iter().map(|s| s.half[0].max(s.half[1]).max(s.half[2])).fold(0.1f32, f32::max) * 4.0;
+                    points.push((pos, render::mul(n.c("Emissive light color"), n.f("Emissive light intensity")), reach));
+                }
+                if n.b("Show emitter") {
+                    shown.extend(shapes.iter().map(|s| (s.clone(), n.c("Emitter color"))));
+                }
+            }
+            let particles = (!volume).then(|| Particles {
                 count: n.f("Count") as usize,
                 lifetime: n.f("Lifetime"),
                 speed: n.f("Speed"),
@@ -256,7 +370,6 @@ fn build(g: &Graph, lit: bool, ortho: bool, step: f32) -> Built {
                 sparks: n.b("Render sparks"),
                 brightness: n.f("Spark brightness"),
             });
-            let volume = n.kind == Kind::Emitter;
             emitters.push(Emitter {
                 shapes,
                 particles,
@@ -264,7 +377,7 @@ fn build(g: &Graph, lit: bool, ortho: bool, step: f32) -> Built {
                 smoke: n.f("Smoke rate"),
                 temp_k: n.f("Temperature"),
                 gradient: if volume { n.f("Emission gradient") } else { 15.0 },
-                expansion: n.f("Expansion"),
+                expansion: if volume { pct(n, "Additional pressure rate") } else { 0.0 },
                 vel,
                 spread: if volume { n.f("Velocity spread") } else { 0.3 },
                 fuel_add: !volume || n.ch("Fuel emission") == 0,
@@ -273,30 +386,54 @@ fn build(g: &Graph, lit: bool, ortho: bool, step: f32) -> Built {
                 burst: if volume && n.f("Time between bursts") > 0.0 { n.f("Duration of burst") } else { 0.0 },
                 gap: if volume { n.f("Time between bursts") } else { 0.0 },
                 chaos,
+                pressure_noise: [pct(n, "Pressure random intensity"), n.f("Pressure random scale"), n.f("Pressure random seed"), n.f("Pressure random speed")],
+                shadow_caster: volume && n.b("Shadow caster"),
             });
         }
         for j in g.inputs(&live, si, "Forces") {
             let n = &g.nodes[j];
-            let (kind, radius, dir, extra, scale, speed) = match n.kind {
-                Kind::ForceLine => (0, 1.0, ui2sim(n.c("Direction")), 0.0, 0.0, 0.0),
-                Kind::ForcePoint => (1, n.f("Radius"), [0.0, 1.0, 0.0], 0.0, 0.0, 0.0),
-                Kind::ForceToroidal => (2, n.f("Ring radius"), ui2sim(n.c("Axis")), n.f("Tube radius"), 0.0, 0.0),
-                Kind::ForceNoise => (3, 1.0, [0.0, 1.0, 0.0], 0.0, n.f("Scale"), n.f("Speed")),
-                Kind::ForceVectorField => (4, n.f("Radius"), ui2sim(n.c("Axis")), n.ch("Field type") as f32, 0.0, 0.0),
-                Kind::ForceVorticles => (5, n.f("Area"), [0.0, 1.0, 0.0], 0.0, n.f("Vortex size"), n.f("Rise speed")),
+            if !n.b("Force activity") {
+                continue;
+            }
+            let (kind, radius, dir, extra, scale, speed, strength) = match n.kind {
+                Kind::ForceLine => (0, 1.0, ui2sim(n.c("Direction")), 0.0, 0.0, 0.0, n.f("Strength")),
+                Kind::ForcePoint => (1, n.f("Radius"), [0.0, 1.0, 0.0], 0.0, 0.0, 0.0, n.f("Strength")),
+                Kind::ForceToroidal => (2, n.f("Ring radius"), ui2sim(n.c("Axis")), n.f("Tube radius"), 0.0, 0.0, n.f("Strength")),
+                Kind::ForceNoise => (3, 1.0, [0.0, 1.0, 0.0], 0.0, 100.0 / n.f("Scale").max(0.5), n.f("Animation speed"), n.f("Amplitude") / 9.667),
+                Kind::ForceVectorField => (4, n.f("Radius"), ui2sim(n.c("Axis")), n.ch("Field type") as f32, 0.0, 0.0, n.f("Strength")),
+                Kind::ForceVorticles => (5, n.f("Area"), [0.0, 1.0, 0.0], 0.0, n.f("Vortex size"), n.f("Rise speed"), n.f("Strength")),
                 _ => continue,
             };
+            let pos = ui2sim(n.c("Position"));
+            let mut mask = first_shape(g, j, "Mask Shapes");
+            if n.b("Tether Mask Shapes") {
+                if let Some(m) = &mut mask {
+                    for k in 0..3 {
+                        m.center[k] += pos[k];
+                    }
+                }
+            }
+            let sr = n.r("Smoke Range");
+            let tr = n.r("Temperature Range");
+            force_nodes.push(j);
             forces.push(Force {
                 kind,
-                strength: n.f("Strength"),
+                strength,
                 scale,
                 speed,
-                pos: ui2sim(n.c("Position")),
+                pos,
                 radius,
                 dir,
                 extra,
-                mask: first_shape(g, j, "Mask Shapes"),
+                mask,
                 softness: n.f("Mask softness"),
+                masks: [pct(n, "Constant mask"), pct(n, "Velocity mask"), pct(n, "Temperature mask"), pct(n, "Smoke mask")],
+                ranges: [tr[0], tr[1], sr[0] / 100.0, sr[1] / 100.0],
+                noise: if kind == 3 { [n.f("Octaves"), n.f("Lacunarity"), n.f("Gain"), n.b("Curl noise") as u8 as f32] } else { [1.0, 2.0, 0.5, 1.0] },
+                bias: ui2sim(n.c("Bias")),
+                seed: n.f("Seed"),
+                mode: n.ch("Mode") as u32,
+                rot: rotation_ui(n.c("Rotation")),
             });
         }
         for j in g.inputs(&live, si, "Colliders") {
@@ -305,32 +442,88 @@ fn build(g: &Graph, lit: bool, ortho: bool, step: f32) -> Built {
             }
         }
     }
-    let wind = ui2sim(simn.c("Wind"));
+    let s = &simn;
+    let adv = s.b("Advanced parameters");
+    let advanced_proj = s.ch("Control Mode") == 1;
+    let grav = pct(s, "Gravity multiplier");
+    let walls = [("Solid Ground", 1), ("Solid Ceiling", 2), ("Solid Wall -X", 4), ("Solid Wall +X", 8), ("Solid Wall -Y", 32), ("Solid Wall +Y", 16)]
+        .iter()
+        .filter(|(k, _)| s.b(k))
+        .map(|(_, b)| *b)
+        .sum();
+    let wr = s.c("Wind dir randomization");
+    let vtr = s.r("Temperature Range");
+    let vsr = s.r("Smoke Range");
     let sp = SimParams {
-        time_scale: simn.f("Time scale"),
-        buoyancy: simn.f("Buoyancy"),
-        smoke_weight: simn.f("Smoke weight"),
-        vorticity: simn.f("Vorticity"),
-        burn_rate: simn.f("Burn rate"),
-        ignition_k: simn.f("Ignition temperature"),
-        heat: simn.f("Heat from burning"),
-        smoke_yield: simn.f("Smoke from burning"),
-        cooling: simn.f("Cooling"),
-        smoke_fade: simn.f("Smoke dissipation"),
-        wind: [wind[0], wind[2]],
-        iterations: simn.f("Pressure iterations") as usize,
-        substeps: (simn.f("Substeps") as usize).max(1),
+        time_scale: 60.0 / s.f("Timestep").max(1.0),
+        substeps: (s.f("Substeps") as usize).max(1),
+        freeze: s.b("Freeze Simulation"),
+        mode: s.ch("Simulation Mode") as u32,
+        vel_cubic: s.ch("Velocity Advection method") == 1,
+        vox_cubic: s.ch("Voxel Advection method") == 1,
+        order: s.ch("Advection accuracy") as u32,
+        adv_offset: ui2sim(s.c("Advection offset")),
+        hourglass: pct(s, "Hourglass Filter Strength"),
+        reuse_pressure: s.b("Reuse Projection Solution"),
+        leak_guard: s.b("Prevent Velocity Leakage"),
+        collider_removal: pct(s, "Collider Removal Amplifier"),
+        iterations: match s.ch("Projection Quality") {
+            0 => 10,
+            1 => 20,
+            2 => 40,
+            3 => 80,
+            _ => s.f("Projection iterations") as usize,
+        },
+        sor_share: if advanced_proj { pct(s, "Over-relaxed share") } else { 0.5 },
+        omega: if advanced_proj { s.f("Relaxation factor") } else { 1.8 },
+        burn_rate: pct(s, "Burn rate"),
+        ignition_k: s.f("Ignition temperature"),
+        ignition_soft_k: if adv { s.f("Ignition softness") } else { 400.0 },
+        max_burn_k: if adv { s.f("Max burn temperature") } else { 6000.0 },
+        heat: pct(s, "Generated heat"),
+        smoke_yield: pct(s, "Generated smoke"),
+        flames_yield: pct(s, "Generated flames"),
+        expansion: pct(s, "Combustion expansion"),
+        diss: [
+            s.f("Temperature dissipation (*)") * 0.0036,
+            s.f("Velocity dissipation (*)") * 0.002,
+            s.f("Smoke dissipation (*)") * 0.000526,
+            s.f("Flames dissipation (*)") * 0.004,
+            s.f("Fuel dissipation (*)") * 0.002,
+        ],
+        sub: [s.f("Smoke dissipation (-)") / 600.0, s.f("Flames dissipation (-)") / 600.0, s.f("Fuel dissipation (-)") / 600.0],
+        diffusion: [
+            (s.f("Temperature Diffusion Speed") * 0.1).min(0.9),
+            (s.f("Smoke Diffusion Speed") * 0.1).min(0.9),
+            (s.f("Fuel Diffusion Speed") * 0.1).min(0.9),
+            (s.f("Flames Diffusion Speed") * 0.1).min(0.9),
+            (s.f("Velocity Diffusion Speed") * 0.1).min(0.9),
+        ],
+        vorticity: pct(s, "Vorticity intensity"),
+        vorticity_large: pct(s, "Large vorticity intensity"),
+        vort_masks: [pct(s, "Velocity mask"), pct(s, "Temperature mask"), pct(s, "Smoke mask"), pct(s, "Constant mask")],
+        vort_ranges: [vtr[0], vtr[1], vsr[0] / 100.0, vsr[1] / 100.0],
+        vort_ramp: s.f("Vorticity ramp"),
+        tightness: pct(s, "Force Tightness") * 0.1,
+        buoyancy: s.f("Buoyancy") / 300.0 * grav,
+        smoke_weight: pct(s, "Smoke weight") * grav,
+        fuel_weight: pct(s, "Fuel weight") * grav,
+        walls,
+        wind_dir: ui2sim(s.c("Wind direction")),
+        wind_rand: [wr[0].abs(), wr[2].abs(), wr[1].abs()],
+        wind_speed: s.f("Wind speed"),
+        wind_chaos: s.f("Wind chaos"),
+        shred: [pct(s, "Shredding intensity"), s.f("Shredding temp threshold"), s.f("Shredding threshold width")],
+        mask: [s.ch("Mask shape") as f32, s.f("Mask intensity"), s.f("Mask distance")],
         forces,
         colliders,
         emitters,
     };
 
-    // shading
+    // ---------- shading ----------
     let shading_i = find(Kind::Shading);
-    let shading = shading_i.map(|i| g.nodes[i].clone());
     let mut ambient = [0.0; 3];
     let mut sun = None;
-    let mut point = None;
     if let Some(si) = shading_i {
         for j in g.inputs(&live, si, "Lights") {
             let n = &g.nodes[j];
@@ -341,55 +534,139 @@ fn build(g: &Graph, lit: bool, ortho: bool, step: f32) -> Built {
                     let (el, az) = (n.f("Elevation").to_radians(), n.f("Azimuth").to_radians());
                     sun = Some((col, render::norm(ui2sim([el.cos() * az.cos(), el.cos() * az.sin(), el.sin()]))));
                 }
-                Kind::LightPoint if point.is_none() => point = Some((ui2sim(n.c("Position")), col, n.f("Range"))),
+                Kind::LightPoint => points.insert(0, (ui2sim(n.c("Position")), col, n.f("Range"))),
                 _ => {}
             }
         }
     } else {
         ambient = [1.0; 3];
     }
-    // fire colour: gradient, constant or blackbody
+    let shn = shading_i.map(|i| g.nodes[i].clone()).unwrap_or_else(|| template(Kind::Shading));
+    let remap = shn.r("Flames remap range");
+    // fire colour lookup table: gradient, constant or blackbody node
     let colorn = first_of(shading_i, "Fire color", &[Kind::FireGradient, Kind::ColorConstant, Kind::ColorBlackbody]).cloned().unwrap_or_else(|| template(Kind::FireGradient));
-    let (grad, t_min_k, t_max_k, brightness) = match colorn.kind {
-        Kind::ColorConstant => {
-            let c = colorn.c("Color");
-            ([c.map(|v| v * 0.4), c, c.map(|v| (v * 1.3).min(1.0))], colorn.f("Min temperature"), colorn.f("Max temperature"), colorn.f("Brightness"))
-        }
-        Kind::ColorBlackbody => {
-            let (lo, hi, sat) = (colorn.f("Min temperature"), colorn.f("Max temperature"), colorn.f("Saturation"));
-            ([blackbody(lo, sat).map(|v| v * 0.5), blackbody((lo + hi) * 0.5, sat), blackbody(hi, sat)], lo, hi, colorn.f("Brightness"))
-        }
-        _ => ([colorn.c("Cold color"), colorn.c("Mid color"), colorn.c("Hot color")], colorn.f("Min temperature"), colorn.f("Max temperature"), colorn.f("Brightness")),
+    let lut = match colorn.kind {
+        Kind::ColorConstant => vec![colorn.c("Color"); 256],
+        Kind::ColorBlackbody => (0..256).map(|i| blackbody(remap[0] + (remap[1] - remap[0]) * i as f32 / 255.0, colorn.f("Saturation"))).collect(),
+        _ => widgets::bake_gradient(&colorn.grad("Color gradient"), colorn.ch("Interpolation color space")),
     };
-    let shn = shading.unwrap_or_else(|| template(Kind::Shading));
     let scene_i = find(Kind::Scene);
-    let proc_ = scene_i.and_then(|s| first_of(Some(s), "Volume", &[Kind::VolumeProcessing]));
-    let has_volume = proc_.is_some_and(|p| {
+    let proc_ = scene_i.and_then(|s| first_of(Some(s), "Volume", &[Kind::VolumeProcessing])).cloned();
+    let has_volume = proc_.as_ref().is_some_and(|p| {
         let pi = g.nodes.iter().position(|n| n.id == p.id).unwrap();
         !g.inputs(&live, pi, "Volume").is_empty()
     });
+    let vp = proc_.unwrap_or_else(|| template(Kind::VolumeProcessing));
     let sky = first_of(scene_i, "Skybox", &[Kind::Skybox]).map(|n| (n.c("Top color"), n.c("Bottom color")));
     let ground = first_of(scene_i, "Ground", &[Kind::Ground]).map(|n| (n.c("Color"), n.f("Height")));
     let sparks = scene_i.is_some_and(|s| !g.inputs(&live, s, "Particles").is_empty());
+    let rn = g.nodes.iter().find(|n| n.kind == Kind::Render).cloned().unwrap_or_else(|| template(Kind::Render));
+    let sharp = |k: &str| (shn.f(k) - 100.0) / 100.0 * 0.25;
+    let sl = |k: &str| vp.f(k) / 100.0;
+    let modulation = if vp.b("Active") { vp.ch("Modulated channel") as f32 } else { -1.0 };
     let shade = Shade {
         lit,
         ambient,
         sun,
-        grad,
-        t_min_k,
-        t_max_k,
-        brightness,
+        lut,
+        coloring: shn.ch("Flames coloring") as u32,
+        fire_color: shn.c("Fire color"),
+        remap,
+        remap_ramp: shn.f("Flames remap ramp"),
+        clamp_remap: shn.b("Clamp the remapping"),
+        shaping_flames: pct(&shn, "Shaping by flames"),
+        shaping_density: pct(&shn, "Shaping by density"),
+        flames_min: pct(&shn, "Flames density min limit"),
+        flames_scale: pct(&shn, "Flames density scale"),
+        flames_opacity: pct(&shn, "Flames opacity"),
+        flames_translucent: shn.b("Flames translucency"),
+        render_flames: shn.b("Render flames"),
+        render_smoke: shn.b("Render smoke"),
+        render_fuel: shn.b("Render fuel"),
         smoke_color: shn.c("Smoke color"),
-        absorption: shn.f("Absorption"),
-        shadow: shn.f("Shadow strength"),
-        detail: shn.f("Fine detail"),
-        point,
+        smoke_scale: pct(&shn, "Smoke density scale"),
+        smoke_min: pct(&shn, "Smoke density min limit"),
+        smoke_clamp: pct(&shn, "Smoke density clamp"),
+        smoke_coloring: shn.ch("Smoke coloring") as u32,
+        smoke_remap: shn.r("Smoke remap range"),
+        smoke_remap_ramp: shn.f("Smoke remap ramp"),
+        smoke_by_temp: shn.b("Remap by temperature"),
+        fuel_color: shn.c("Fuel color"),
+        fuel_scale: pct(&shn, "Fuel density scale"),
+        shadow_density: pct(&shn, "Smoke shadow density"),
+        // 50% reproduces plain transmittance; more darkens shadows, less lightens them
+        shadow_intensity: shn.f("Smoke shadow intensity") / 50.0,
+        shadow_sharpness: pct(&shn, "Shadowing sharpness"),
+        shadow_steps: if shn.b("Advanced parameters") { shn.f("Shadow steps") } else { 64.0 },
+        shadow_reach: if shn.b("Advanced parameters") { pct(&shn, "Shadow max distance") } else { 1.0 },
+        anisotropy: pct(&shn, "Lighting anisotropy"),
+        ao: pct(&shn, "Ambient occlusion"),
+        extinction: shn.c("Extinction color"),
+        direct: pct(&shn, "Direct light contribution") * 4.0,
+        flames_light: pct(&shn, "Flames contribution"),
+        particles_light: pct(&shn, "Particles contribution"),
+        scatter_radius: shn.f("Scattering radius"),
+        scatter_occlusion: shn.f("Scattering occlusion"),
+        emask: [
+            shn.b("Masking Active") as u8 as f32,
+            shn.f("Density reference"),
+            shn.f("Width"),
+            shn.f("Masking ramp"),
+            pct(&shn, "Masking intensity"),
+            pct(&shn, "Low frequencies"),
+            pct(&shn, "Medium frequencies"),
+            pct(&shn, "High frequencies"),
+        ],
+        sharpen: shn.b("Raymarch sharpening").then(|| [sharp("Smoke sharpening"), sharp("Flames sharpening"), sharp("Temperature sharpening")]),
+        post: [vp.ch("Volume post process") as f32, sl("Post process strength"), modulation, 100.0 / vp.f("Noise scale").max(0.5), sl("Modulation intensity"), vp.f("Modulation speed")],
+        // sim axes: x-, x+, z- (= UI Y+), z+ (= UI Y-), y- (ground), y+ (roof)
+        slicing: [
+            sl("X- wall offset"), sl("X- wall width"), sl("X+ wall offset"), sl("X+ wall width"),
+            sl("Y+ wall offset"), sl("Y+ wall width"), sl("Y- wall offset"), sl("Y- wall width"),
+            sl("Z- ground offset"), sl("Z- ground width"), sl("Z+ roof offset"), sl("Z+ roof width"),
+            vp.f("Mask ramp"),
+        ],
+        points,
+        shapes: shown,
+        shape_mode: [rn.ch("Shapes Rendering") as u32, rn.ch("Shapes Masking") as u32, rn.b("Invert Shapes Alpha") as u32],
         sparks,
-        density: if has_volume { proc_.map_or(1.0, |p| p.f("Smoke density")) } else { 0.0 },
-        temp_mul: if has_volume { proc_.map_or(1.0, |p| p.f("Temperature multiplier")) } else { 0.0 },
+        sparks_hq: s.b("Particles HQ rendering"),
+        spark_group: [1, 2, 4, 8][s.ch("Grouping size").min(3)],
+        render_volume: rn.b("Render Volume") && has_volume,
+        render_particles: rn.b("Render Particles"),
+        volume_occludes_particles: rn.b("Volume Occludes Particles"),
+        particles_occlude_volume: rn.b("Particles Occlude Volume"),
+        detail: [0.0, 0.8, 1.6][s.ch("Upscaling").min(2)],
+        fast_detail: s.b("Fast upscaler"),
         sky,
         ground,
         step,
+        pass: 0,
+    };
+    let scn = scene_i.map(|i| g.nodes[i].clone()).unwrap_or_else(|| template(Kind::Scene));
+    let post = Post {
+        gamma: scn.f("Gamma"),
+        exposure: scn.f("Exposure"),
+        vibrance: scn.f("Color vibrance"),
+        tonemap: scn.ch("HDR Tonemapping") as u32,
+        dither: pct(&scn, "Tonemap dithering"),
+        contrast: scn.f("Contrast"),
+        brightness: scn.f("Brightness"),
+        saturation: scn.f("Saturation"),
+        swizzle: scn.ch("Channels swizzling") as u32,
+        bloom: scn.f("Bloom Intensity"),
+        bloom_radius: scn.f("Bloom Radius"),
+        vignette: [scn.f("Width"), scn.f("Offset"), pct(&scn, "Roundness"), pct(&scn, "Intensity")],
+        style: scn.ch("Rendering style") as u32,
+        style_size: scn.f("Style size"),
+        quant: [scn.f("RGB quantization"), scn.f("Hue quantization"), scn.f("Value quantization"), scn.f("Saturation quantization")],
+        quant_dither: pct(&scn, "Quantization dither"),
+        dither_mode: scn.ch("Dithering mode") as u32,
+        alpha_limit: pct(&scn, "Translucency limit"),
+        alpha_sharpen: pct(&scn, "Translucency sharpening"),
+        remap_style: scn.ch("Remapping style") as u32,
+        alpha_mode: 2,
+        invert_alpha: false,
     };
     let render_i = find(Kind::Render);
     let camn = first_of(render_i, "Camera", &[Kind::Camera, Kind::CameraFree])
@@ -400,39 +677,25 @@ fn build(g: &Graph, lit: bool, ortho: bool, step: f32) -> Built {
         let (eye, at) = (ui2sim(camn.c("Position")), ui2sim(camn.c("Look at")));
         let d = render::sub(eye, at);
         let dist = render::dot(d, d).sqrt().max(0.05);
-        Camera {
-            yaw: d[0].atan2(d[2]).to_degrees(),
-            pitch: (d[1] / dist).clamp(-1.0, 1.0).asin().to_degrees(),
-            dist,
-            fov: camn.f("Field of view"),
-            target: at,
-            ortho,
-        }
+        Camera { yaw: d[0].atan2(d[2]).to_degrees(), pitch: (d[1] / dist).clamp(-1.0, 1.0).asin().to_degrees(), dist, fov: camn.f("Field of view"), target: at, ortho }
     } else {
-        Camera {
-            yaw: camn.f("Yaw"),
-            pitch: camn.f("Pitch"),
-            dist: camn.f("Distance"),
-            fov: camn.f("Field of view"),
-            target: [0.0, camn.f("Target height"), 0.0],
-            ortho,
-        }
+        Camera { yaw: camn.f("Yaw"), pitch: camn.f("Pitch"), dist: camn.f("Distance"), fov: camn.f("Field of view"), target: [0.0, camn.f("Target height"), 0.0], ortho }
     };
-    let rn = g.nodes.iter().find(|n| n.kind == Kind::Render).cloned().unwrap_or_else(|| template(Kind::Render));
     Built {
         sp,
-        res: simn.ch("Resolution"),
-        domain: simn.f("Domain size").max(0.2),
+        dom,
         shade,
+        post,
         cam,
         duration: rn.f("Duration").max(1.0) as u32,
-        out: [rn.f("Width") as usize, rn.f("Height") as usize],
-        cols: rn.f("Flipbook columns").max(1.0) as usize,
-        fstep: rn.f("Frame step").max(1.0) as u32,
+        looping: s.ch("Looping Mode") == 1,
+        sim_gizmo: s.b("Enable gizmo"),
+        force_nodes,
+        render: rn,
         imports,
+        reduced,
     }
 }
-
 
 enum Job {
     Sequence,
@@ -505,78 +768,202 @@ fn export_volume(gpu: &Gpu, sim: &GpuSim, base: &str) -> Result<String, String> 
     Ok(format!("Saved volume (frame {}) to {}", sim.frame, dir.display()))
 }
 
+/// What and how to export (from the Render node, or a simple Export node).
+#[derive(Clone)]
+struct ExportCfg {
+    flipbook: bool,
+    /// Size of one image (sequence) or one tile (flipbook)
+    size: [usize; 2],
+    cols: usize,
+    rows: usize,
+    first: u32,
+    count: u32,
+    stride: u32,
+    offset: i64,
+    absolute: bool,
+    dir: PathBuf,
+    pattern: String,
+    project: String,
+    /// 0 png, 1 exr, 2 tga
+    format: usize,
+    passes: Vec<RPass>,
+    alpha_mode: u32,
+    invert_alpha: bool,
+}
+
+impl ExportCfg {
+    fn from_render(rn: &Node, project: &str) -> Self {
+        let flipbook = rn.ch("Export Mode") == 0;
+        let (cols, rows) = (rn.f("Flipbook columns").max(1.0) as usize, rn.f("Flipbook rows").max(1.0) as usize);
+        let size = if flipbook {
+            [(rn.f("Flipbook width") as usize / cols).max(1), (rn.f("Flipbook height") as usize / rows).max(1)]
+        } else {
+            [rn.f("Image width") as usize, rn.f("Image height") as usize]
+        };
+        let mut passes = rn.passes("Mapping");
+        if passes.is_empty() {
+            passes.push(RPass { src: 0, hdr: false, dst: 0 });
+        }
+        ExportCfg {
+            flipbook,
+            size,
+            cols,
+            rows,
+            first: rn.f("First Frame").max(0.0) as u32,
+            count: rn.f("Number of Frames").max(1.0) as u32,
+            stride: rn.f("Frame Stride").max(1.0) as u32,
+            offset: rn.f("Numbering offset") as i64,
+            absolute: rn.b("Absolute Frames"),
+            dir: widgets::export_dir(rn),
+            pattern: rn.s("Filename"),
+            project: project.to_string(),
+            format: rn.ch("File format"),
+            passes,
+            alpha_mode: rn.ch("Alpha Blending Mode") as u32,
+            invert_alpha: rn.b("Invert Render Alpha"),
+        }
+    }
+
+    fn file(&self, pass: &RPass, frame: Option<i64>) -> PathBuf {
+        let mut name = widgets::expand_filename(&self.pattern, &self.project, &widgets::safename(pass.src));
+        if let Some(f) = frame {
+            name = if name.contains("$(frame)") { name.replace("$(frame)", &format!("{f:04}")) } else { format!("{name}_{f:04}") };
+        }
+        self.dir.join(name + [".png", ".exr", ".tga"][self.format.min(2)])
+    }
+}
+
+/// Save one image: `rgba8` (display) or `hdr` (linear floats), stored as RGBA, RGB or one channel.
+fn save_image(path: &std::path::Path, format: usize, dst: usize, w: usize, h: usize, rgba8: &[u8], hdr: Option<&[f32]>) -> Result<(), String> {
+    let err = |e: image::ImageError| format!("{}: {e}", path.display());
+    if format == 1 {
+        {
+            // EXR: floats (from the HDR buffer, or the 8-bit picture if HDR is off)
+            let fl: Vec<f32> = match hdr {
+                Some(f) => f.to_vec(),
+                None => rgba8.iter().map(|&b| b as f32 / 255.0).collect(),
+            };
+            match dst {
+                2 => image::ImageBuffer::<image::Rgb<f32>, _>::from_raw(w as u32, h as u32, fl.chunks(4).flat_map(|c| [c[0], c[0], c[0]]).collect::<Vec<f32>>()).map(image::DynamicImage::ImageRgb32F),
+                1 => image::ImageBuffer::<image::Rgb<f32>, _>::from_raw(w as u32, h as u32, fl.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect::<Vec<f32>>()).map(image::DynamicImage::ImageRgb32F),
+                _ => image::ImageBuffer::<image::Rgba<f32>, _>::from_raw(w as u32, h as u32, fl).map(image::DynamicImage::ImageRgba32F),
+            }
+            .ok_or("image size mismatch")?
+            .save(path)
+            .map_err(err)
+        }
+    } else {
+        {
+            let fmt = if format == 2 { image::ImageFormat::Tga } else { image::ImageFormat::Png };
+            match dst {
+                2 => image::save_buffer_with_format(path, &rgba8.chunks(4).map(|c| c[0]).collect::<Vec<u8>>(), w as u32, h as u32, image::ColorType::L8, fmt),
+                1 => image::save_buffer_with_format(path, &rgba8.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect::<Vec<u8>>(), w as u32, h as u32, image::ColorType::Rgb8, fmt),
+                _ => image::save_buffer_with_format(path, rgba8, w as u32, h as u32, image::ColorType::Rgba8, fmt),
+            }
+            .map_err(err)
+        }
+    }
+}
+
 /// Image sequence / flipbook export, advanced a few frames per UI frame on the GPU.
 struct ExportJob {
-    flip: bool,
-    b: Built,
+    cfg: ExportCfg,
     /// Graph and view settings, re-read each frame (modulators animate during export).
     src: (Graph, bool, bool, f32),
     sim: GpuSim,
     target: Target,
-    dir: PathBuf,
-    sheet: Vec<u8>,
-    rows: usize,
-    tile: usize,
+    /// One sheet per pass (flipbook): 8-bit and float pixels
+    sheets: Vec<(Vec<u8>, Vec<f32>)>,
+    saved: u32,
+    prev: Option<Vec<V3>>,
 }
 
 impl ExportJob {
-    fn new(gpu: &Gpu, b: Built, src: (Graph, bool, bool, f32), flip: bool, base: &str) -> Result<Self, String> {
-        let dir = new_export_dir(base)?;
-        let [w, h] = b.out;
-        let frames = (0..b.duration).filter(|f| f % b.fstep == 0).count();
-        let rows = frames.div_ceil(b.cols);
-        Ok(ExportJob {
-            flip,
-            sim: GpuSim::new(gpu, b.res, b.domain),
-            target: Target::new(gpu, w, h),
-            sheet: if flip { vec![0u8; w * b.cols * h * rows * 4] } else { vec![] },
-            rows,
-            tile: 0,
-            dir,
-            b,
-            src,
-        })
+    fn new(gpu: &Gpu, b: &Built, src: (Graph, bool, bool, f32), cfg: ExportCfg) -> Result<Self, String> {
+        std::fs::create_dir_all(&cfg.dir).map_err(|e| format!("{}: {e}", cfg.dir.display()))?;
+        let [w, h] = cfg.size;
+        let sheet_px = w * cfg.cols * h * cfg.rows;
+        let sheets = if cfg.flipbook {
+            cfg.passes.iter().map(|p| (vec![0u8; sheet_px * 4], if p.hdr || cfg.format == 1 { vec![0.0f32; sheet_px * 4] } else { vec![] })).collect()
+        } else {
+            vec![]
+        };
+        Ok(ExportJob { sim: GpuSim::new(gpu, b.dom), target: Target::new(gpu, w.max(8), h.max(8)), sheets, saved: 0, prev: None, src, cfg })
+    }
+
+    fn last_frame(&self) -> u32 {
+        let count = if self.cfg.flipbook { self.cfg.count.min((self.cfg.cols * self.cfg.rows) as u32) } else { self.cfg.count };
+        self.cfg.first + (count.max(1) - 1) * self.cfg.stride
     }
 
     fn progress(&self) -> f32 {
-        self.sim.frame as f32 / self.b.duration as f32
+        self.sim.frame as f32 / (self.last_frame() + 1) as f32
     }
 
     /// Ok(Some(message)) when finished.
     fn advance(&mut self, gpu: &Gpu, steps: u32) -> Result<Option<String>, String> {
-        let [w, h] = self.b.out;
+        let [w, h] = self.cfg.size;
+        let last = self.last_frame();
         for _ in 0..steps {
-            if self.sim.frame >= self.b.duration {
+            if self.sim.frame > last {
                 break;
             }
             let f = self.sim.frame;
             let (g, lit, ortho, step) = &self.src;
-            let now = build(&modulate::apply(g, f as f32 / FPS), *lit, *ortho, *step);
+            let mg = modulate::apply(g, f as f32 / FPS);
+            let now = build_moving(&mg, self.prev.as_deref(), *lit, *ortho, *step);
+            self.prev = Some(emitter_positions(&mg));
             self.sim.step(gpu, &now.sp);
-            if f % self.b.fstep != 0 {
+            if f < self.cfg.first || (f - self.cfg.first) % self.cfg.stride != 0 {
                 continue;
             }
-            self.sim.render(gpu, &self.target, &now.cam, &now.shade, 0, 1.0);
-            let px = gpu.read_target(&self.target);
-            if self.flip {
-                let cols = self.b.cols;
-                let (tx, ty) = (self.tile % cols, self.tile / cols);
-                for row in 0..h {
-                    let dst = ((ty * h + row) * w * cols + tx * w) * 4;
-                    self.sheet[dst..dst + w * 4].copy_from_slice(&px[row * w * 4..(row + 1) * w * 4]);
+            let index = (f - self.cfg.first) / self.cfg.stride;
+            let mut post = now.post.clone();
+            post.alpha_mode = self.cfg.alpha_mode;
+            post.invert_alpha = self.cfg.invert_alpha;
+            for (pi, pass) in self.cfg.passes.clone().iter().enumerate() {
+                let mut shade = now.shade.clone();
+                shade.pass = pass.src as u32;
+                // a few refinement passes for clean frames
+                for k in 0..4u32 {
+                    self.sim.render(gpu, &self.target, &now.cam, &shade, &post, f * 7 + k, 1.0 / (k + 1) as f32);
                 }
-            } else {
-                save_png(&self.dir.join(format!("frame_{:04}.png", f)), &px, w, h)?;
+                let px = gpu.read_target(&self.target);
+                let want_float = pass.hdr || self.cfg.format == 1;
+                let fl = want_float.then(|| gpu.read_hdr(&self.target));
+                if self.cfg.flipbook {
+                    let cols = self.cfg.cols;
+                    let (tx, ty) = (index as usize % cols, index as usize / cols);
+                    let (sheet, fsheet) = &mut self.sheets[pi];
+                    for row in 0..h {
+                        let dst = ((ty * h + row) * w * cols + tx * w) * 4;
+                        sheet[dst..dst + w * 4].copy_from_slice(&px[row * w * 4..(row + 1) * w * 4]);
+                        if let Some(fl) = &fl {
+                            if !fsheet.is_empty() {
+                                fsheet[dst..dst + w * 4].copy_from_slice(&fl[row * w * 4..(row + 1) * w * 4]);
+                            }
+                        }
+                    }
+                } else {
+                    let number = if self.cfg.absolute { f as i64 } else { index as i64 } + self.cfg.offset;
+                    let hdr = if pass.hdr { fl.as_deref() } else { None };
+                    save_image(&self.cfg.file(pass, Some(number)), self.cfg.format, pass.dst, w, h, &px, hdr)?;
+                }
             }
-            self.tile += 1;
+            self.saved += 1;
         }
-        if self.sim.frame < self.b.duration {
+        if self.sim.frame <= last {
             return Ok(None);
         }
-        if self.flip {
-            save_png(&self.dir.join(format!("flipbook_{}x{}.png", self.b.cols, self.rows)), &self.sheet, w * self.b.cols, h * self.rows)?;
+        if self.cfg.flipbook {
+            let (sw, sh) = (w * self.cfg.cols, h * self.cfg.rows);
+            for (pi, pass) in self.cfg.passes.iter().enumerate() {
+                let (sheet, fsheet) = &self.sheets[pi];
+                let hdr = (pass.hdr && !fsheet.is_empty()).then_some(fsheet.as_slice());
+                save_image(&self.cfg.file(pass, None), self.cfg.format, pass.dst, sw, sh, sheet, hdr)?;
+            }
         }
-        Ok(Some(format!("Saved {} frames to {}", self.tile, self.dir.display())))
+        Ok(Some(format!("Saved {} frames × {} passes to {}", self.saved, self.cfg.passes.len(), self.cfg.dir.display())))
     }
 }
 
@@ -598,7 +985,6 @@ struct App {
     show_axes: bool,
     show_bounds: bool,
     playing: bool,
-    looping: bool,
     show_home: bool,
     home: home::Home,
     hq_samples: u32,
@@ -654,7 +1040,7 @@ impl App {
         let gpu = Gpu::new(rs.device.clone(), rs.queue.clone());
         App {
             graph: Graph::default(),
-            sim: GpuSim::new(&gpu, 1, 1.0),
+            sim: GpuSim::new(&gpu, domain_of(&template(Kind::Simulation)).0),
             gpu,
             rs,
             view: None,
@@ -670,7 +1056,6 @@ impl App {
             show_axes: true,
             show_bounds: false,
             playing: true,
-            looping: false,
             show_home: start_home,
             home: home::Home::new(),
             hq_samples: 0,
@@ -709,14 +1094,19 @@ impl App {
     fn make_thumb(&mut self, i: usize) {
         let mut g = Graph::default();
         presets::apply(&mut g, i);
+        // thumbnails use a coarser grid of the same size
+        let simi = g.first(Kind::Simulation).unwrap();
+        let (vc, vs) = (g.nodes[simi].c("Voxel count"), g.nodes[simi].f("Voxel size"));
+        g.nodes[simi].set("Voxel count", Val::V(vc.map(|x| (x * 0.6).round())));
+        g.nodes[simi].set("Voxel size", Val::F(vs / 0.6));
         let b = build(&g, true, false, 0.7);
-        let mut s = GpuSim::new(&self.gpu, 0, b.domain);
+        let mut s = GpuSim::new(&self.gpu, b.dom);
         let frames = presets::PRESETS[i].frame.min(90);
         for _ in 0..frames {
             s.step(&self.gpu, &b.sp);
         }
         let t = Target::new(&self.gpu, 400, 248);
-        s.render(&self.gpu, &t, &b.cam, &b.shade, 0, 1.0);
+        s.render(&self.gpu, &t, &b.cam, &b.shade, &b.post, 0, 1.0);
         let id = self.rs.renderer.write().register_native_texture(&self.gpu.device, &t.srgb_view, wgpu::FilterMode::Linear);
         self.home.thumbs[i] = Some((t, id));
     }
@@ -745,8 +1135,22 @@ impl App {
 
     fn restart(&mut self) {
         let b = self.built();
-        self.sim = GpuSim::new(&self.gpu, b.res, b.domain);
+        self.sim = GpuSim::new(&self.gpu, b.dom);
         self.load_imports(&b);
+    }
+
+    fn project_name(&self) -> String {
+        self.project.as_ref().and_then(|p| p.file_stem()).map_or("Untitled".to_string(), |s| s.to_string_lossy().to_string())
+    }
+
+    /// Simulation › Time Control › Looping Mode
+    fn looping(&self) -> bool {
+        self.graph.first(Kind::Simulation).is_some_and(|i| self.graph.nodes[i].ch("Looping Mode") == 1)
+    }
+    fn set_looping(&mut self, on: bool) {
+        if let Some(n) = self.graph.node_mut(Kind::Simulation) {
+            n.set("Looping Mode", Val::Ch(on as usize));
+        }
     }
 
     /// Import nodes: load .vol grids as the starting state of the simulation.
@@ -776,27 +1180,39 @@ impl App {
         }
     }
 
-    /// Run an Export node's "Export now".
+    /// Run an Export node's or the Render node's "Export Now".
     fn export_node(&mut self, i: usize) {
         let n = self.graph.nodes[i].clone();
-        let mut b = self.built();
-        let job = match n.kind {
+        let b = self.built();
+        let project = self.project_name();
+        let mut cfg = ExportCfg::from_render(&b.render, &project);
+        match n.kind {
+            Kind::Render => {}
             Kind::ExportImage => {
-                b.out = [n.f("Width") as usize, n.f("Height") as usize];
-                b.duration = n.f("Frames").max(1.0) as u32;
-                b.fstep = n.f("Frame step").max(1.0) as u32;
-                Job::Sequence
+                cfg.flipbook = false;
+                cfg.size = [n.f("Width") as usize, n.f("Height") as usize];
+                cfg.first = 0;
+                cfg.count = n.f("Frames").max(1.0) as u32;
+                cfg.stride = n.f("Frame step").max(1.0) as u32;
             }
             Kind::ExportFlipbook => {
-                b.out = [n.f("Tile width") as usize, n.f("Tile height") as usize];
-                b.duration = n.f("Frames").max(1.0) as u32;
-                b.fstep = n.f("Frame step").max(1.0) as u32;
-                b.cols = n.f("Columns").max(1.0) as usize;
-                Job::Flipbook
+                cfg.flipbook = true;
+                cfg.size = [n.f("Tile width") as usize, n.f("Tile height") as usize];
+                cfg.cols = n.f("Columns").max(1.0) as usize;
+                cfg.count = n.f("Frames").max(1.0) as u32;
+                cfg.rows = (cfg.count as usize).div_ceil(cfg.cols);
+                cfg.first = 0;
+                cfg.stride = n.f("Frame step").max(1.0) as u32;
             }
-            _ => Job::Volume,
-        };
-        self.start_export_with(job, b);
+            _ => {
+                self.status = match export_volume(&self.gpu, &self.sim, &self.export_dir) {
+                    Ok(m) => m,
+                    Err(e) => format!("Export failed: {e}"),
+                };
+                return;
+            }
+        }
+        self.start_export_cfg(cfg, b);
     }
 
     /// Jump to a frame. Going back restarts; the frames in between are simulated a few per
@@ -826,24 +1242,34 @@ impl App {
 
     fn start_export(&mut self, job: Job) {
         let b = self.built();
-        self.start_export_with(job, b);
+        let mut cfg = ExportCfg::from_render(&b.render, &self.project_name());
+        match job {
+            Job::Volume => {
+                self.status = match export_volume(&self.gpu, &self.sim, &self.export_dir) {
+                    Ok(m) => m,
+                    Err(e) => format!("Export failed: {e}"),
+                };
+                return;
+            }
+            Job::Flipbook => cfg.flipbook = true,
+            Job::Sequence => {
+                cfg.flipbook = false;
+                cfg.size = [b.render.f("Image width") as usize, b.render.f("Image height") as usize];
+            }
+        }
+        self.start_export_cfg(cfg, b);
     }
 
-    fn start_export_with(&mut self, job: Job, b: Built) {
+    fn start_export_cfg(&mut self, cfg: ExportCfg, b: Built) {
         if self.export.is_some() {
             return;
         }
         let src = (self.graph.clone(), self.lit, self.ortho, self.step());
-        let r = match job {
-            Job::Volume => export_volume(&self.gpu, &self.sim, &self.export_dir).map(Some),
-            _ => ExportJob::new(&self.gpu, b, src, matches!(job, Job::Flipbook), &self.export_dir).map(|j| {
+        self.status = match ExportJob::new(&self.gpu, &b, src, cfg) {
+            Ok(j) => {
                 self.export = Some(j);
-                None
-            }),
-        };
-        self.status = match r {
-            Ok(Some(msg)) => msg,
-            Ok(None) => "Exporting…".into(),
+                "Exporting…".into()
+            }
             Err(e) => format!("Export failed: {e}"),
         };
     }
@@ -1142,7 +1568,10 @@ impl App {
                         self.restart();
                         ui.close_menu();
                     }
-                    ui.checkbox(&mut self.looping, "Loop at render duration");
+                    let mut lp = self.looping();
+                    if ui.checkbox(&mut lp, "Loop at render duration").changed() {
+                        self.set_looping(lp);
+                    }
                     ui.separator();
                     if ui.button("Browse presets…").clicked() {
                         self.home.page = home::Page::Presets;
@@ -1242,7 +1671,7 @@ impl App {
         let (target, tex_id) = self.view.as_ref().unwrap();
         if draw {
             let seed = self.sim.frame.wrapping_mul(7).wrapping_add(self.hq_samples);
-            self.sim.render(&self.gpu, target, &b.cam, &b.shade, seed, weight);
+            self.sim.render(&self.gpu, target, &b.cam, &b.shade, &b.post, seed, weight);
         }
         ui.painter().image(*tex_id, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
 
@@ -1253,7 +1682,57 @@ impl App {
         let em = self.emitter_index();
 
         if self.view_tab == 0 {
-            if self.show_bounds {
+            // arrows of the selected force (Visual › Enable gizmo) and its mask outline
+            if let Some(fi) = self.graph.selected.and_then(|s| b.force_nodes.iter().position(|&j| j == s)) {
+                let n = &self.graph.nodes[b.force_nodes[fi]];
+                let f = &b.sp.forces[fi];
+                let (o, s) = (self.sim.origin(), self.sim.size());
+                if n.b("Enable gizmo") {
+                    let t = self.sim.frame as f32 / FPS;
+                    let k = (3.0 + n.f("Density").clamp(0.1, 1.0) * 9.0).round() as usize;
+                    let slice = n.ch("Visual mode") == 1;
+                    let mut pts = vec![];
+                    for i in 0..k {
+                        for jy in 0..k {
+                            for jz in 0..if slice { 1 } else { k } {
+                                let u = |a: usize| (a as f32 + 0.5) / k as f32;
+                                let z = if slice { ((f.pos[2] - o[2]) / s[2]).clamp(0.0, 1.0) } else { u(jz) };
+                                pts.push([o[0] + s[0] * u(i), o[1] + s[1] * u(jy), o[2] + s[2] * z]);
+                            }
+                        }
+                    }
+                    let vecs: Vec<V3> = pts.iter().map(|&p| force_vec(f, p, t)).collect();
+                    let max = vecs.iter().map(|v| render::dot(*v, *v).sqrt()).fold(1e-6, f32::max);
+                    let arm = s[0].min(s[1]) / k as f32 * 0.8 / max;
+                    let arrow = n.ch("Arrow type") == 0;
+                    let st = Stroke::new(1.2, Color32::from_rgb(90, 200, 255).gamma_multiply(0.85));
+                    for (p, v) in pts.iter().zip(&vecs) {
+                        if let (Some(a), Some(c)) = (proj(*p), proj(render::add(*p, v.map(|x| x * arm)))) {
+                            painter.line_segment([a, c], st);
+                            let d = c - a;
+                            if arrow && d.length() > 4.0 {
+                                let (dn, w) = (d.normalized(), d.normalized().rot90());
+                                painter.line_segment([c, c - dn * 4.0 + w * 2.5], st);
+                                painter.line_segment([c, c - dn * 4.0 - w * 2.5], st);
+                            }
+                        }
+                    }
+                }
+                if let Some(mk) = f.mask.as_ref().filter(|_| n.b("Show Force Mask")) {
+                    for axis in 0..3 {
+                        let pts: Vec<Pos2> = (0..=32)
+                            .filter_map(|q| {
+                                let a = q as f32 / 32.0 * std::f32::consts::TAU;
+                                let (c, sn, h) = (a.cos(), a.sin(), mk.half);
+                                let d = match axis { 0 => [c * h[0], sn * h[1], 0.0], 1 => [c * h[0], 0.0, sn * h[2]], _ => [0.0, c * h[1], sn * h[2]] };
+                                proj(render::add(mk.center, d))
+                            })
+                            .collect();
+                        painter.add(egui::Shape::line(pts, Stroke::new(1.0, Color32::from_rgb(255, 200, 80))));
+                    }
+                }
+            }
+            if self.show_bounds || b.sim_gizmo {
                 let (o, s) = (self.sim.origin(), self.sim.size());
                 let c = |i: usize| [o[0] + s[0] * (i & 1) as f32, o[1] + s[1] * ((i >> 1) & 1) as f32, o[2] + s[2] * ((i >> 2) & 1) as f32];
                 for (a, bb) in [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)] {
@@ -1266,9 +1745,9 @@ impl App {
             if let Some(ei) = em {
                 let n = &self.graph.nodes[ei];
                 let pos = ui2sim(n.c("Position"));
-                if self.render_shapes && n.b("Show shape") {
+                if self.render_shapes && n.b("Show emitter") {
                     let size = b.sp.emitters.first().and_then(|e| e.shapes.first()).map_or(0.22, |s| s.half[0]);
-                    let sc = n.c("Shape color");
+                    let sc = n.c("Emitter color");
                     let col = Color32::from_rgb((sc[0] * 255.0) as u8, (sc[1] * 255.0) as u8, (sc[2] * 255.0) as u8);
                     for axis in 0..3 {
                         let pts: Vec<Pos2> = (0..=32)
@@ -1396,6 +1875,7 @@ impl App {
             ui.separator();
             ui.checkbox(&mut self.hq, "HQ render (Ctrl+3)");
             ui.checkbox(&mut self.lit, "Lit");
+            ui.checkbox(&mut self.ortho, "Orthographic camera");
             ui.checkbox(&mut self.render_shapes, "Show emitter shapes");
             ui.checkbox(&mut self.show_bounds, "Show domain bounds");
             ui.separator();
@@ -1443,11 +1923,15 @@ impl App {
                     }
                 });
                 ui.end_row();
-                ui.label(small("Projection"));
-                let mut pi = self.ortho as usize;
-                stepper(ui, &mut pi, &["Perspective", "Ortho"]);
-                self.ortho = pi == 1;
-                ui.end_row();
+                if let Some(sn) = self.graph.node_mut(Kind::Simulation) {
+                    ui.label(small("Projection Quality"));
+                    let mut pi = sn.ch("Projection Quality");
+                    stepper(ui, &mut pi, &["Low", "Medium", "High", "Ultra", "Custom"]);
+                    if pi != sn.ch("Projection Quality") {
+                        sn.set("Projection Quality", Val::Ch(pi));
+                    }
+                    ui.end_row();
+                }
                 ui.label(small("Render Shapes"));
                 ui.checkbox(&mut self.render_shapes, "");
                 ui.end_row();
@@ -1530,8 +2014,9 @@ impl App {
         ui.horizontal(|ui| {
             ui.add_space(6.0);
             let icon = |s: &str, on: bool| egui::Button::new(RichText::new(s).color(if on { ACCENT } else { TEXT })).frame(false);
-            if ui.add(icon("↻", self.looping)).on_hover_text("Loop at render duration").clicked() {
-                self.looping = !self.looping;
+            if ui.add(icon("↻", self.looping())).on_hover_text("Loop at render duration").clicked() {
+                let lp = !self.looping();
+                self.set_looping(lp);
             }
             if ui.add(icon("⏮", false)).on_hover_text("Restart (R)").clicked() {
                 self.restart();
@@ -1618,7 +2103,10 @@ impl App {
                 self.seek(duration);
                 ui.close_menu();
             }
-            ui.checkbox(&mut self.looping, "Loop at render duration");
+            let mut lp = self.looping();
+            if ui.checkbox(&mut lp, "Loop at render duration").changed() {
+                self.set_looping(lp);
+            }
         });
         if let Some(p) = rr.interact_pointer_pos() {
             if rr.clicked() || rr.dragged() {
@@ -1698,6 +2186,17 @@ impl eframe::App for App {
         // --screenshot: draw ~120 frames, grab the window, save and quit
         self.frames += 1;
         if let Some(path) = self.shot.clone() {
+            // FC_SELECT="Node title" and FC_SECTION="Tab name" pick which settings the shot shows
+            if self.frames == 1 {
+                if let Ok(t) = std::env::var("FC_SELECT") {
+                    self.graph.selected = self.graph.nodes.iter().position(|n| n.title == t || (n.title.is_empty() && n.kind.name() == t));
+                }
+                if let (Ok(s), Some(i)) = (std::env::var("FC_SECTION"), self.graph.selected) {
+                    if let Some(p) = self.graph.nodes[i].params.iter().find(|p| p.section == s) {
+                        self.graph.active_section = p.section;
+                    }
+                }
+            }
             if self.frames == 120 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }
@@ -1750,15 +2249,21 @@ impl eframe::App for App {
 
         // simulate
         let b = self.built();
-        if b.res != self.sim.res || (b.domain - self.sim.n[0] as f32 * self.sim.h).abs() > 1e-4 || std::mem::take(&mut self.graph.import_request) {
-            self.sim = GpuSim::new(&self.gpu, b.res, b.domain);
+        if b.dom.n != self.sim.dom.n || (b.dom.h - self.sim.dom.h).abs() > 1e-7 || std::mem::take(&mut self.graph.import_request) {
+            self.sim = GpuSim::new(&self.gpu, b.dom);
             self.load_imports(&b);
+        } else if b.dom.origin != self.sim.dom.origin {
+            // moving the bounds doesn't restart the simulation
+            self.sim.dom.origin = b.dom.origin;
+        }
+        if b.reduced && self.status.is_empty() {
+            self.status = "Grid reduced to fit the graphics card (max 48 million voxels)".into();
         }
         if self.seek_to.is_some() {
             self.advance_seek();
         } else if self.playing {
             self.sim.step(&self.gpu, &b.sp);
-            if self.looping && self.sim.frame >= b.duration {
+            if b.looping && self.sim.frame >= b.duration {
                 self.restart();
             }
         }
@@ -1819,6 +2324,13 @@ impl eframe::App for App {
         if let Some(i) = self.graph.export_request.take() {
             self.export_node(i);
         }
+        // data for the Shading node's histograms and the Render node's filename preview
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(widgets::PROJECT_ID), self.project_name()));
+        let shading_open = self.graph.selected.is_some_and(|i| self.graph.nodes.get(i).is_some_and(|n| n.kind == Kind::Shading));
+        if shading_open && ctx.cumulative_pass_nr() % 30 == 0 {
+            let (temp, smoke) = self.sim.histograms(&self.gpu);
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new(widgets::HIST_ID), widgets::Histograms { temp, smoke, temp_max: 10000.0, smoke_max: 2.0 }));
+        }
         if let Some(c) = self.graph.cmd.take() {
             self.edit(ctx, c);
         }
@@ -1865,26 +2377,34 @@ mod tests {
         let gpu = gpu::test_gpu();
         let g = Graph::default();
         let b = build(&g, true, false, 0.7);
-        let mut s = GpuSim::new(&gpu, b.res, b.domain);
+        let mut s = GpuSim::new(&gpu, b.dom);
         for _ in 0..120 {
             s.step(&gpu, &b.sp);
         }
         let t = Target::new(&gpu, 360, 300);
-        s.render(&gpu, &t, &b.cam, &b.shade, 0, 1.0);
+        s.render(&gpu, &t, &b.cam, &b.shade, &b.post, 0, 1.0);
         let px = gpu.read_target(&t);
         let _ = std::fs::create_dir_all("shots");
         save_png(std::path::Path::new("shots/test.png"), &px, t.w, t.h).unwrap();
         let bright = px.chunks(4).filter(|p| p[0] > 200 && p[1] > 90).count();
         assert!(bright > 200, "expected visible flames, got {bright} bright pixels");
 
-        let base = std::env::temp_dir().join("firecraft_test").display().to_string();
-        let mut small = b.clone();
-        small.duration = 4;
-        small.out = [32, 32];
-        small.cols = 2;
-        let mut job = ExportJob::new(&gpu, small, (g.clone(), true, false, 0.7), true, &base).unwrap();
-        while job.advance(&gpu, 4).unwrap().is_none() {}
-        assert!(export_volume(&gpu, &s, &base).unwrap().contains("volume"));
+        let base = std::env::temp_dir().join("firecraft_test");
+        for (flip, format) in [(true, 0), (false, 1), (false, 2)] {
+            let mut cfg = ExportCfg::from_render(&b.render, "test");
+            cfg.flipbook = flip;
+            cfg.format = format;
+            cfg.size = [32, 32];
+            cfg.cols = 2;
+            cfg.rows = 2;
+            cfg.count = 4;
+            cfg.dir = base.clone();
+            let mut job = ExportJob::new(&gpu, &b, (g.clone(), true, false, 0.7), cfg).unwrap();
+            while job.advance(&gpu, 4).unwrap().is_none() {}
+        }
+        let files = std::fs::read_dir(&base).unwrap().count();
+        assert!(files >= 2 + 2 * 4, "expected exported files, got {files}");
+        assert!(export_volume(&gpu, &s, &base.display().to_string()).unwrap().contains("volume"));
         let _ = std::fs::remove_dir_all(&base);
     }
 }
@@ -1912,25 +2432,39 @@ mod look {
     fn look_renders() {
         let gpu = gpu::test_gpu();
         let mut g = Graph::default();
-        presets::apply(&mut g, 0);
-        g.node_mut(Kind::Simulation).unwrap().set("Resolution", Val::Ch(2));
-        let cam = g.node_mut(Kind::Camera).unwrap();
-        cam.set("Distance", Val::F(1.25));
-        cam.set("Target height", Val::F(0.4));
-        // experiment switches (comma list in FC_LOOK): nodetail, nojitter, nochaos, noemchaos
-        let flags = std::env::var("FC_LOOK").unwrap_or_default();
-        if flags.contains("nodetail") { g.node_mut(Kind::Shading).unwrap().set("Fine detail", Val::F(0.0)); }
-        if flags.contains("nojitter") { g.node_mut(Kind::Emitter).unwrap().set("Velocity spread", Val::F(0.0)); }
-        let by_title = |g: &mut Graph, t: &str| g.nodes.iter().position(|n| n.title == t).unwrap();
-        if flags.contains("nochaos") { let i = by_title(&mut g, "Fire Chaos"); g.nodes[i].set("Strength", Val::F(0.0)); }
-        if flags.contains("noemchaos") { let i = by_title(&mut g, "Emission Chaos"); g.nodes[i].set("Strength", Val::F(0.0)); }
-        if flags.contains("novort") { g.node_mut(Kind::Simulation).unwrap().set("Vorticity", Val::F(0.0)); }
-        if flags.contains("lowvort") { g.node_mut(Kind::Simulation).unwrap().set("Vorticity", Val::F(0.1)); }
+        // FC_PRESET="smoke column" keeps that preset's own camera
+        match std::env::var("FC_PRESET") {
+            Ok(name) => {
+                let i = presets::PRESETS.iter().position(|p| p.name.to_lowercase().contains(&name.to_lowercase())).expect("no such preset");
+                presets::apply(&mut g, i);
+            }
+            Err(_) => {
+                presets::apply(&mut g, 0);
+                let cam = g.node_mut(Kind::Camera).unwrap();
+                cam.set("Distance", Val::F(1.9));
+                cam.set("Target height", Val::F(0.3));
+            }
+        }
+        // experiments: FC_SET="Node title|Setting=1.5;Other node|Vec=1,2,3"
+        for item in std::env::var("FC_SET").unwrap_or_default().split(';').filter(|s| !s.is_empty()) {
+            let (node, rest) = item.split_once('|').unwrap();
+            let (name, val) = rest.split_once('=').unwrap();
+            let i = g.nodes.iter().position(|n| n.title == node || (n.title.is_empty() && n.kind.name() == node)).unwrap_or_else(|| panic!("no node {node}: {:?}", g.nodes.iter().map(|n| n.title.clone()).collect::<Vec<_>>()));
+            let nums: Vec<f32> = val.split(',').map(|x| x.trim().parse().unwrap()).collect();
+            let v = match (nums.len(), &g.nodes[i].params.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("no {name}")).val) {
+                (3, _) => Val::V([nums[0], nums[1], nums[2]]),
+                (_, Val::Ch(_)) => Val::Ch(nums[0] as usize),
+                (_, Val::B(_)) => Val::B(nums[0] != 0.0),
+                _ => Val::F(nums[0]),
+            };
+            g.nodes[i].set(name, v);
+        }
         let step: f32 = std::env::var("FC_STEP").ok().and_then(|v| v.parse().ok()).unwrap_or(0.4);
         let b = build(&g, true, false, step);
-        let mut s = GpuSim::new(&gpu, b.res, b.domain);
+        let mut s = GpuSim::new(&gpu, b.dom);
         let t = Target::new(&gpu, 720, 600);
-        for f in 1..=150u32 {
+        let frames: u32 = std::env::var("FC_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(150);
+        for f in 1..=frames {
             s.step(&gpu, &b.sp);
             if f == 90 {
                 // raw temperature slice through the middle of the domain (no rendering involved)
@@ -1951,10 +2485,10 @@ mod look {
                 }
                 save_png(std::path::Path::new("shots/slice_90.png"), &px, nx, ny).unwrap();
             }
-            if f == 90 || f == 150 {
-                s.render(&gpu, &t, &b.cam, &b.shade, f, 1.0);
+            if f == 90 || f == frames {
+                s.render(&gpu, &t, &b.cam, &b.shade, &b.post, f, 1.0);
                 let px = gpu.read_target(&t);
-                save_png(std::path::Path::new(&format!("shots/close_{f}.png")), &px, t.w, t.h).unwrap();
+                save_png(std::path::Path::new(&format!("shots/close_{}.png", if f == frames { "last".to_string() } else { f.to_string() })), &px, t.w, t.h).unwrap();
             }
         }
     }
@@ -1981,7 +2515,7 @@ mod preset_pictures {
             presets::apply(&mut g, i);
             g.node_mut(Kind::Simulation).unwrap().set("Resolution", Val::Ch(2));
             let b0 = build(&g, true, false, 0.25);
-            let mut s = GpuSim::new(&gpu, b0.res, b0.domain);
+            let mut s = GpuSim::new(&gpu, b0.dom);
             for f in 0..pr.frame {
                 let b = build(&modulate::apply(&g, f as f32 / FPS), true, false, 0.25);
                 s.step(&gpu, &b.sp);
@@ -1989,7 +2523,7 @@ mod preset_pictures {
             let b = build(&modulate::apply(&g, pr.frame as f32 / FPS), true, false, 0.25);
             let t = Target::new(&gpu, w, h);
             for pass in 0..12u32 {
-                s.render(&gpu, &t, &b.cam, &b.shade, pass, 1.0 / (pass + 1) as f32);
+                s.render(&gpu, &t, &b.cam, &b.shade, &b.post, pass, 1.0 / (pass + 1) as f32);
             }
             let px = gpu.read_target(&t);
             save_png(std::path::Path::new(&format!("assets/presets/{}.png", slug(pr.name))), &px, w, h).unwrap();
@@ -2029,7 +2563,7 @@ mod readme_media {
             std::fs::write(format!("shots/readme_{k}.fcproj"), g.save()).unwrap();
             g.node_mut(Kind::Simulation).unwrap().set("Resolution", Val::Ch(2));
             let b0 = build(&g, true, false, 0.3);
-            let mut s = GpuSim::new(&gpu, b0.res, b0.domain);
+            let mut s = GpuSim::new(&gpu, b0.dom);
             let t = Target::new(&gpu, 360, 240);
             let total = start + 96;
             for f in 0..total {
@@ -2037,7 +2571,7 @@ mod readme_media {
                 s.step(&gpu, &b.sp);
                 if f >= *start && (f - start) % 2 == 0 {
                     for pass in 0..4u32 {
-                        s.render(&gpu, &t, &b.cam, &b.shade, f * 4 + pass, 1.0 / (pass + 1) as f32);
+                        s.render(&gpu, &t, &b.cam, &b.shade, &b.post, f * 4 + pass, 1.0 / (pass + 1) as f32);
                     }
                     let px = gpu.read_target(&t);
                     save_png(std::path::Path::new(&format!("shots/anim/{k}_{:03}.png", (f - start) / 2)), &px, t.w, t.h).unwrap();

@@ -1,0 +1,115 @@
+firecraft-project 1
+node	ShapePrimitive	40	232	1
+title	Fire Shape
+p	Shape type	0	0	0
+p	Size	0.24	0	0
+p	Scale	1 1 1	0	0
+p	Torus thickness	0.3	0	0
+p	Position	0 0 0	0	0
+node	ForceNoise	40	287	1
+title	Emission Chaos
+p	Strength	0.3	0	0
+p	Scale	1	0	0
+p	Speed	1	0	0
+p	Mask softness	0.3	0	0
+node	ForceNoise	170	195	1
+title	Fire Chaos
+p	Strength	2	0	0
+p	Scale	1	0	0
+p	Speed	1	0	0
+p	Mask softness	0.3	0	0
+node	Emitter	170	250	1
+p	Emitter activity	1	0	0
+p	Duration of burst	0.5	0	0
+p	Time between bursts	0	0	0
+p	Position	0 0 0	0	0
+p	Fuel emission	0	0	0
+p	Fuel rate	250	0	0
+p	Smoke emission	0	0	0
+p	Smoke rate	0	0	0
+p	Temperature emission	1	0	0
+p	Temperature	4100	0	0
+p	Emission gradient	15	0	0
+p	Expansion	0	0	0
+p	Initial velocity	0 0 1	0	0
+p	Velocity spread	1	0	0
+p	Show shape	1	0	0
+p	Shape color	0.95 0.2 0.25	0	0
+node	Simulation	320	213	1
+p	Resolution	1	0	0
+p	Domain size	1	0	0
+p	Time scale	1	0	0
+p	Pressure iterations	40	0	0
+p	Substeps	1	0	0
+p	Buoyancy	1	0	0
+p	Smoke weight	0.1	0	0
+p	Vorticity	0	0	0
+p	Burn rate	1	0	0
+p	Ignition temperature	500	0	0
+p	Heat from burning	1	0	0
+p	Smoke from burning	0	0	0
+p	Cooling	1.15	0	0
+p	Smoke dissipation	1.5	0	0
+p	Wind	0 0 0	0	0
+node	VolumeProcessing	462	273	1
+p	Smoke density	1	0	0
+p	Temperature multiplier	1	0	0
+node	LightAmbient	315	38	1
+p	Intensity	0.15	0	0
+p	Color	0.6 0.7 0.9	0	0
+node	FireGradient	320	103	1
+title	Fire Color Gradient
+p	Cold color	0.45 0.025 0	0	0
+p	Mid color	1 0.2 0.012	0	0
+p	Hot color	1 0.62 0.22	0	0
+p	Min temperature	800	0	0
+p	Max temperature	4300	0	0
+p	Brightness	1	0	0
+node	LightDirectional	320	158	1
+p	Intensity	1.2	0	0
+p	Color	1 0.95 0.85	0	0
+p	Elevation	50	0	0
+p	Azimuth	30	0	0
+node	Skybox	462	163	0
+p	Top color	0.06 0.12 0.28	0	0
+p	Bottom color	0.2 0.22 0.26	0	0
+node	Ground	462	218	0
+p	Color	0.3 0.3 0.3	0	0
+p	Height	-0.2	0	0
+node	Shading	462	89	1
+p	Smoke color	0.1 0.1 0.1	0	0
+p	Absorption	3	0	0
+p	Shadow strength	1	0	0
+p	Fine detail	0	0	0
+node	Camera	605	101	1
+title	Camera
+p	Field of view	40	0	0
+p	Distance	2.6	0	0
+p	Yaw	90	0	0
+p	Pitch	8	0	0
+p	Target height	0.43	0	0
+node	Scene	605	156	1
+node	Render	730	101	1
+p	Duration	64	0	0
+p	Width	512	0	0
+p	Height	512	0	0
+p	Flipbook columns	8	0	0
+p	Frame step	1	0	0
+node	Comment	106	127	1
+text	Use CTRL + 3 for HQ Render Mode
+wire	0	0	3	0
+wire	1	0	3	1
+wire	2	0	4	0
+wire	3	0	4	1
+wire	4	0	5	0
+wire	6	0	11	0
+wire	8	0	11	0
+wire	7	0	11	1
+wire	8	0	9	0
+wire	11	0	13	0
+wire	9	0	13	1
+wire	10	0	13	2
+wire	5	0	13	3
+wire	4	1	13	4
+wire	12	0	14	0
+wire	13	0	14	1

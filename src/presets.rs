@@ -38,7 +38,7 @@ pub const PRESETS: &[Preset] = &[
     p("Smoke Grenade", "Smoke", 240),
     p("Dry Ice Waterfall", "Smoke", 240),
     p("Ground Explosion", "Explosion", 45),
-    p("Aerial Fireball", "Explosion", 28),
+    p("Aerial Fireball", "Explosion", 45),
     p("Mushroom Cloud", "Explosion", 200),
     p("Muzzle Flash", "Explosion", 12),
     p("Billowing Puffs", "Smoke", 230),
@@ -833,11 +833,6 @@ pub fn apply(g: &mut Graph, i: usize) {
             set(g, SIM, "Domain size", F(3.0));
         }
         _ => {}
-    }
-    // fires made of pure heat (no fuel) make no flames to shape the glow with
-    let burns = g.nodes.iter().any(|n| n.enabled && n.params.iter().any(|p| p.name == "Fuel rate" && matches!(p.val, Val::F(r) if r > 0.0)));
-    if !burns {
-        set(g, SHADING, "Shaping by flames", F(0.0));
     }
     // frame the camera to the domain
     let domain = g.nodes[SIM].domain_width();

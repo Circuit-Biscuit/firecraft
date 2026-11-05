@@ -2,32 +2,41 @@
 
 All notable changes to FireCraft. Each release on GitHub shows the section for its version.
 
-## [0.5.1] - 2026-11-05
+## [0.6.0] - 2026-11-05
 
-The smooth, flowing fire from 0.4 is back. Simulation bounds are now easy to set.
+The fire engine from 0.4.0 is back, unchanged. Every node and setting from 0.5 stays.
+
+### Changed
+
+- **The fire and smoke look exactly like 0.4.0 again.** The 0.5 simulation and renderer are replaced by the 0.4.0 engine. A test renders the default scene and a 0.4 project, then compares every pixel with pictures made by the 0.4.0 build. They match exactly: 0 of 255 difference on every pixel.
+- The new node settings drive the 0.4 engine. Every setting that existed in 0.4 converts back to exactly the number 0.4 used.
+- Settings the 0.4 engine has no counterpart for yet are shown dimmed. Hovering over one says so. They will be connected one at a time, each checked against the 0.4 pictures.
+- The preset pictures and README media are 0.4's own again.
 
 ### Added
 
 - **Editable simulation bounds**:
-  - Select the Simulation node and its box appears in the viewport. Drag the coloured dot on any face to move that side.
-  - *Bounds size* in metres is on the Domain tab.
-  - *Edit simulation bounds* is in the Simulation menu and the viewport's right-click menu.
-
-### Changed
-
-- The 0.4 look is the default again. New defaults:
-  - Plain ACES tonemapping, with no bloom, no raymarch sharpening and no flame shaping.
-  - No vorticity or temperature diffusion.
-  - A single-octave noise.
-  - A 25% hourglass filter on the reused pressure solve.
-- Changing the grid size restarts the simulation only when you let go of the mouse.
-- Preset pictures, README screenshots and the preview GIF were re-rendered.
+  - Select the Simulation node and drag the coloured dots on the box in the viewport.
+  - Or type the *Bounds size* in metres on the Domain tab.
+  - *Edit simulation bounds* is also in the Simulation menu.
+- The 0.4 engine now takes any voxel count, voxel size and box position.
+- It also gains the Shading node's temperature and smoke histograms.
+- Export render passes are added to the 0.4 renderer: alpha, emission, scattering, temperature, density, fuel and depth. You can also choose premultiplied, straight or opaque alpha, invert the alpha, and save PNG, EXR (linear colour) or TGA.
 
 ### Fixed
 
-- **Fine grids no longer blow out.** Glow, smoke density and shadows are now measured per metre instead of per voxel. Small voxels used to make the fire brighter and more opaque until it became a flat yellow blob. The look is calibrated to the 0.4 High grid.
-- **0.4 projects and presets behave like 0.4 again.** *Buoyancy*, *Burn rate*, *Smoke weight* and the noise *Scale* kept their names in 0.5 but changed units, and old values were read in the new units. For example, buoyancy 1.0 became 1% instead of 300%, so the fire hardly rose and the fuel didn't burn. Old values are now converted. Measured on the GPU, the 0.4 scene's heat, fuel, height and spread now track 0.4.
-- Removed the fine dotted grain in thin flames and smoke.
+- 0.4 projects and presets: *Buoyancy*, *Burn rate*, *Smoke weight* and the noise *Scale* kept their names in 0.5 but changed units. Their old values are now converted on load.
+
+### Known limitations
+
+- Not connected yet (dimmed):
+  - Tonemapping choices, bloom, vignette and styles.
+  - Flame shaping and emissive masking.
+  - Diffusion, vorticity masks, shredding, the domain mask, solid walls other than the ground, and wind chaos.
+  - Advection and projection options other than iterations.
+  - Rotation of emitters, shapes and forces, and the force masks by temperature, smoke or velocity.
+  - The noise force's octaves, lacunarity, gain, bias and seed.
+- The 0.5 engine is kept on the branch `new-engine-0.5.1`.
 
 ## [0.5.0] - 2026-11-05
 

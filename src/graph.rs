@@ -267,7 +267,16 @@ impl Kind {
         !matches!(self, Kind::Scene | Kind::Render | Kind::Camera | Kind::CameraFree | Kind::Comment | Kind::Note)
     }
 
+    /// Settings of a new node; those the 0.4 engine doesn't use yet are marked `idle`.
     fn params(self) -> Vec<Param> {
+        let mut v = self.params_base();
+        for p in &mut v {
+            p.idle = !crate::bridge::engine_uses(self, p.name);
+        }
+        v
+    }
+
+    fn params_base(self) -> Vec<Param> {
         use Val::*;
         const SHAPES: &[&str] = &["Sphere", "Box", "Cylinder", "Torus"];
         const MODE: &[&str] = &["Add", "Replace"];
@@ -819,6 +828,8 @@ pub struct Param {
     pub hidden: bool,
     /// Two-option choice drawn as a pair of buttons.
     pub seg: bool,
+    /// Shown but not connected to the (0.4) engine yet: drawn dimmed.
+    pub idle: bool,
 }
 
 impl Param {
@@ -871,6 +882,7 @@ fn mk(section: &'static str, name: &'static str, val: Val, range: (f32, f32), un
         dec: 3,
         hidden: false,
         seg: false,
+        idle: false,
     }
 }
 fn r(s: &'static str, n: &'static str, v: [f32; 2], range: (f32, f32), unit: &'static str) -> Param {
@@ -1007,6 +1019,11 @@ const OLD_DIMS: [[f32; 3]; 4] = [[96.0, 96.0, 144.0], [160.0, 160.0, 240.0], [22
 
 /// Settings that were renamed or re-expressed in newer versions: map them onto today's settings.
 /// Returns false if the name is unknown. Used by presets and when opening older projects.
+/// Force: Noise Amplitude per unit of 0.4's "Strength" (Emission Chaos / every other noise force).
+/// Chosen so today's defaults (50 and 19.333) give back 0.4's 0.3 and 2.0 exactly.
+pub const NOISE_EMIT: f32 = 500.0 / 3.0;
+pub const NOISE_FIRE: f32 = 9.6665;
+
 /// Settings that kept their 0.4 name but count in new units (0.4 used plain multipliers).
 /// Values from 0.4 projects and the presets go through `legacy_set` to be converted.
 pub const UNIT_CHANGED: [(Kind, &str); 4] =
@@ -1071,7 +1088,7 @@ pub fn legacy_set(n: &mut Node, name: &str, val: &Val) -> bool {
         (Kind::FireGradient | Kind::ColorConstant | Kind::ColorBlackbody, "Min temperature" | "Max temperature" | "Brightness") => {}
         (Kind::ForceNoise, "Strength") => {
             let emission = n.title == "Emission Chaos";
-            put(n, "Amplitude", Val::F(fv * if emission { 166.7 } else { 9.667 }));
+            put(n, "Amplitude", Val::F(fv * if emission { NOISE_EMIT } else { NOISE_FIRE }));
         }
         (Kind::ForceNoise, "Scale") => {
             let emission = n.title == "Emission Chaos";
@@ -2186,8 +2203,15 @@ pub fn param_row(ui: &mut Ui, p: &mut Param, node_id: u64) {
             p.rand = !p.rand;
         }
         let (lr, label_resp) = ui.allocate_exact_size(vec2(150.0, 18.0), Sense::click());
-        let mut menus = vec![label_resp.on_hover_text(if p.driver.is_some() { "Driven by a modulator (right-click to change)" } else { "Right-click for options" })];
-        let name_col = if p.driver.is_some() { Color32::from_rgb(255, 140, 120) } else { TEXT };
+        let tip = if p.driver.is_some() {
+            "Driven by a modulator (right-click to change)"
+        } else if p.idle {
+            "Not connected to the fire engine yet: changing it has no effect for now"
+        } else {
+            "Right-click for options"
+        };
+        let mut menus = vec![label_resp.on_hover_text(tip)];
+        let name_col = if p.driver.is_some() { Color32::from_rgb(255, 140, 120) } else if p.idle { Color32::from_rgb(105, 107, 110) } else { TEXT };
         let shown = if p.driver.is_some() { format!("∿ {}", p.label) } else { p.label.to_string() };
         let galley = ui.painter().layout_no_wrap(shown, FontId::proportional(12.0), name_col);
         let tw = galley.size().x;

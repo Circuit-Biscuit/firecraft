@@ -10,6 +10,8 @@ mod preset_thumbs;
 mod presets;
 mod render;
 mod sim;
+mod sim04;
+mod bridge;
 mod widgets;
 
 use eframe::egui::{self, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, pos2, vec2};
@@ -81,6 +83,9 @@ fn sim2ui(s: V3) -> V3 {
 #[derive(Clone)]
 struct Built {
     sp: SimParams,
+    /// What the 0.4 engine actually runs and draws with (see bridge.rs).
+    sp04: sim04::SimParams,
+    shade04: sim04::Shade,
     dom: Domain,
     shade: Shade,
     post: Post,
@@ -240,7 +245,9 @@ const MAX_CELLS: f32 = 48.0e6;
 fn domain_of(simn: &Node) -> (Domain, bool) {
     let vc = simn.c("Voxel count");
     let mut ui_n = vc.map(|x| x.round().clamp(8.0, 512.0));
-    let mut h = (simn.f("Voxel size") / 100.0).max(1e-4);
+    // the domain width rounded to 6 decimals, divided like 0.4 did (width / voxels): exactly 0.4's voxel size
+    let width = ((ui_n[0] as f64 * simn.f("Voxel size") as f64 / 100.0 * 1e6).round() / 1e6) as f32;
+    let mut h = (width / ui_n[0]).max(1e-6);
     let total = ui_n[0] * ui_n[1] * ui_n[2];
     let reduced = total > MAX_CELLS;
     if reduced {
@@ -253,7 +260,13 @@ fn domain_of(simn: &Node) -> (Domain, bool) {
     let ext = [n[0] as f32 * h, n[1] as f32 * h, n[2] as f32 * h];
     let z = domain_zero(simn, ext);
     let bp = ui2sim(simn.c("Bounds Position"));
-    (Domain { n, h, origin: [z[0] + bp[0], z[1] + bp[1], z[2] + bp[2]] }, reduced)
+    let mut origin = [z[0] + bp[0], z[1] + bp[1], z[2] + bp[2]];
+    // the 0.4 box (centred, floor 15% below the zero): use 0.4's own formula, bit for bit
+    let zeros = [simn.ch("Zero position on X"), simn.ch("Zero position on Y"), simn.ch("Zero position on Z")];
+    if zeros == [0, 0, 1] && bp[0] == 0.0 && bp[2] == 0.0 && (bp[1] + ext[1] * 0.15).abs() < 1e-5 {
+        origin = [-(n[0] as f32) * h * 0.5, -(n[1] as f32) * h * 0.15, -(n[2] as f32) * h * 0.5];
+    }
+    (Domain { n, h, origin }, reduced)
 }
 
 /// Where the box's min corner sits before the Bounds Position offset (sim axes), from the
@@ -696,8 +709,11 @@ fn build_moving(g: &Graph, prev: Option<&[V3]>, lit: bool, ortho: bool, step: f3
     } else {
         Camera { yaw: camn.f("Yaw"), pitch: camn.f("Pitch"), dist: camn.f("Distance"), fov: camn.f("Field of view"), target: [0.0, camn.f("Target height"), 0.0], ortho }
     };
+    let (sp04, shade04) = bridge::build04(g, prev, lit, step);
     Built {
         sp,
+        sp04,
+        shade04,
         dom,
         shade,
         post,
@@ -928,20 +944,20 @@ impl ExportJob {
             let mg = modulate::apply(g, f as f32 / FPS);
             let now = build_moving(&mg, self.prev.as_deref(), *lit, *ortho, *step);
             self.prev = Some(emitter_positions(&mg));
-            self.sim.step(gpu, &now.sp);
+            self.sim.step(gpu, &now.sp04);
             if f < self.cfg.first || (f - self.cfg.first) % self.cfg.stride != 0 {
                 continue;
             }
             let index = (f - self.cfg.first) / self.cfg.stride;
-            let mut post = now.post.clone();
-            post.alpha_mode = self.cfg.alpha_mode;
-            post.invert_alpha = self.cfg.invert_alpha;
             for (pi, pass) in self.cfg.passes.clone().iter().enumerate() {
-                let mut shade = now.shade.clone();
+                let mut shade = now.shade04.clone();
                 shade.pass = pass.src as u32;
+                // Alpha Blending Mode: premultiplied, straight, opaque (over the background)
+                shade.alpha = [1, 2, 0][self.cfg.alpha_mode.min(2) as usize];
+                shade.invert_alpha = self.cfg.invert_alpha;
                 // a few refinement passes for clean frames
                 for k in 0..4u32 {
-                    self.sim.render(gpu, &self.target, &now.cam, &shade, &post, f * 7 + k, 1.0 / (k + 1) as f32);
+                    self.sim.render(gpu, &self.target, &now.cam, &shade, f * 7 + k, 1.0 / (k + 1) as f32);
                 }
                 let px = gpu.read_target(&self.target);
                 let want_float = pass.hdr || self.cfg.format == 1;
@@ -1121,10 +1137,10 @@ impl App {
         let mut s = GpuSim::new(&self.gpu, b.dom);
         let frames = presets::PRESETS[i].frame.min(90);
         for _ in 0..frames {
-            s.step(&self.gpu, &b.sp);
+            s.step(&self.gpu, &b.sp04);
         }
         let t = Target::new(&self.gpu, 400, 248);
-        s.render(&self.gpu, &t, &b.cam, &b.shade, &b.post, 0, 1.0);
+        s.render(&self.gpu, &t, &b.cam, &b.shade04, 0, 1.0);
         let id = self.rs.renderer.write().register_native_texture(&self.gpu.device, &t.srgb_view, wgpu::FilterMode::Linear);
         self.home.thumbs[i] = Some((t, id));
     }
@@ -1260,7 +1276,7 @@ impl App {
         let start = std::time::Instant::now();
         while self.sim.frame < target && start.elapsed().as_millis() < 30 {
             let b = self.built();
-            self.sim.step(&self.gpu, &b.sp);
+            self.sim.step(&self.gpu, &b.sp04);
         }
         if self.sim.frame >= target {
             self.seek_to = None;
@@ -1705,7 +1721,7 @@ impl App {
         let (target, tex_id) = self.view.as_ref().unwrap();
         if draw {
             let seed = self.sim.frame.wrapping_mul(7).wrapping_add(self.hq_samples);
-            self.sim.render(&self.gpu, target, &b.cam, &b.shade, &b.post, seed, weight);
+            self.sim.render(&self.gpu, target, &b.cam, &b.shade04, seed, weight);
         }
         ui.painter().image(*tex_id, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
 
@@ -2368,7 +2384,7 @@ impl eframe::App for App {
         if self.seek_to.is_some() {
             self.advance_seek();
         } else if self.playing {
-            self.sim.step(&self.gpu, &b.sp);
+            self.sim.step(&self.gpu, &b.sp04);
             if b.looping && self.sim.frame >= b.duration {
                 self.restart();
             }
@@ -2477,6 +2493,37 @@ Real-time fire and smoke")).size(14.0));
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fire must look exactly like 0.4.0: today's default scene and 0.4's own project file
+    /// are rendered and compared with pictures the 0.4.0 build made (tests_ref/).
+    #[test]
+    fn renders_exactly_like_0_4() {
+        let gpu = gpu::test_gpu();
+        let old = Graph::load(&std::fs::read_to_string("tests_ref/default_04.fcproj").unwrap()).unwrap();
+        for (name, g) in [("today's default", Graph::default()), ("0.4 project", old)] {
+            let b = build(&g, true, false, 0.3);
+            let mut s = GpuSim::new(&gpu, b.dom);
+            let t = Target::new(&gpu, 540, 700);
+            for f in 1..=120u32 {
+                s.step(&gpu, &b.sp04);
+                if f == 36 || f == 120 {
+                    for k in 0..8u32 {
+                        s.render(&gpu, &t, &b.cam, &b.shade04, f * 8 + k, 1.0 / (k + 1) as f32);
+                    }
+                    let px = gpu.read_target(&t);
+                    let want = image::open(format!("tests_ref/default_04_f{f}.png")).unwrap().to_rgba8().into_raw();
+                    let diff: Vec<u8> = px.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).collect();
+                    let max = diff.iter().copied().max().unwrap_or(0);
+                    let mean = diff.iter().map(|&d| d as f64).sum::<f64>() / diff.len() as f64;
+                    let _ = std::fs::create_dir_all("shots");
+                    save_png(std::path::Path::new(&format!("shots/vs04_f{f}.png")), &px, t.w, t.h).unwrap();
+                    println!("{name}, frame {f}: max difference {max}/255, mean {mean:.5}");
+                    assert!(max <= 2 && mean < 0.05, "{name}, frame {f}: differs from 0.4 (max {max}, mean {mean:.4})");
+                }
+            }
+        }
+    }
+
     /// Simulates the default scene on the GPU, renders it to shots/test.png and runs the exports.
     #[test]
     fn default_scene_renders_fire_and_exports() {
@@ -2485,10 +2532,10 @@ mod tests {
         let b = build(&g, true, false, 0.7);
         let mut s = GpuSim::new(&gpu, b.dom);
         for _ in 0..120 {
-            s.step(&gpu, &b.sp);
+            s.step(&gpu, &b.sp04);
         }
         let t = Target::new(&gpu, 360, 300);
-        s.render(&gpu, &t, &b.cam, &b.shade, &b.post, 0, 1.0);
+        s.render(&gpu, &t, &b.cam, &b.shade04, 0, 1.0);
         let px = gpu.read_target(&t);
         let _ = std::fs::create_dir_all("shots");
         save_png(std::path::Path::new("shots/test.png"), &px, t.w, t.h).unwrap();
@@ -2571,7 +2618,7 @@ mod look {
         let t = Target::new(&gpu, 720, 600);
         let frames: u32 = std::env::var("FC_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(150);
         for f in 1..=frames {
-            s.step(&gpu, &b.sp);
+            s.step(&gpu, &b.sp04);
             if f == 90 {
                 // raw temperature slice through the middle of the domain (no rendering involved)
                 let sc = s.read_scalars(&gpu);
@@ -2592,7 +2639,7 @@ mod look {
                 save_png(std::path::Path::new("shots/slice_90.png"), &px, nx, ny).unwrap();
             }
             if f == 90 || f == frames {
-                s.render(&gpu, &t, &b.cam, &b.shade, &b.post, f, 1.0);
+                s.render(&gpu, &t, &b.cam, &b.shade04, f, 1.0);
                 let px = gpu.read_target(&t);
                 save_png(std::path::Path::new(&format!("shots/close_{}.png", if f == frames { "last".to_string() } else { f.to_string() })), &px, t.w, t.h).unwrap();
             }
@@ -2624,12 +2671,12 @@ mod preset_pictures {
             let mut s = GpuSim::new(&gpu, b0.dom);
             for f in 0..pr.frame {
                 let b = build(&modulate::apply(&g, f as f32 / FPS), true, false, 0.25);
-                s.step(&gpu, &b.sp);
+                s.step(&gpu, &b.sp04);
             }
             let b = build(&modulate::apply(&g, pr.frame as f32 / FPS), true, false, 0.25);
             let t = Target::new(&gpu, w, h);
             for pass in 0..12u32 {
-                s.render(&gpu, &t, &b.cam, &b.shade, &b.post, pass, 1.0 / (pass + 1) as f32);
+                s.render(&gpu, &t, &b.cam, &b.shade04, pass, 1.0 / (pass + 1) as f32);
             }
             let px = gpu.read_target(&t);
             save_png(std::path::Path::new(&format!("assets/presets/{}.png", slug(pr.name))), &px, w, h).unwrap();
@@ -2674,10 +2721,10 @@ mod readme_media {
             let total = start + 96;
             for f in 0..total {
                 let b = build(&modulate::apply(&g, f as f32 / FPS), true, false, 0.3);
-                s.step(&gpu, &b.sp);
+                s.step(&gpu, &b.sp04);
                 if f >= *start && (f - start) % 2 == 0 {
                     for pass in 0..4u32 {
-                        s.render(&gpu, &t, &b.cam, &b.shade, &b.post, f * 4 + pass, 1.0 / (pass + 1) as f32);
+                        s.render(&gpu, &t, &b.cam, &b.shade04, f * 4 + pass, 1.0 / (pass + 1) as f32);
                     }
                     let px = gpu.read_target(&t);
                     save_png(std::path::Path::new(&format!("shots/anim/{k}_{:03}.png", (f - start) / 2)), &px, t.w, t.h).unwrap();

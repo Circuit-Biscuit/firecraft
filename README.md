@@ -14,9 +14,9 @@ A real-time volumetric effects tool, built in pure Rust for Windows, macOS and L
 [![Status](https://img.shields.io/badge/status-alpha-orange)](#feature-status)
 [![Release](https://img.shields.io/badge/releases-automatic-2ea44f)](#releasing-a-new-version)
 
-<img src="docs/preview.gif" width="100%" alt="Six FireCraft presets simulating live: campfire, mushroom cloud, nebula, toxic cloud, gas burner and a ground explosion">
+<img src="docs/preview.gif" width="100%" alt="Six FireCraft presets simulating live: campfire, mushroom cloud, magic portal, spirit swirl, gas burner and a ground explosion">
 
-<sub><i>Six built-in presets simulating in real time — campfire, mushroom cloud, nebula, toxic cloud, gas burner, ground explosion. Every frame is a live 3D fluid simulation, not a sprite.</i></sub>
+<sub><i>Six built-in presets simulating in real time — campfire, mushroom cloud, magic portal, spirit swirl, gas burner, ground explosion. Every frame is a live 3D fluid simulation, not a sprite.</i></sub>
 
 [Simulate](#simulate-fire-the-way-it-actually-moves) · [Nodes](#a-node-graph-for-every-part-of-the-effect) · [Settings](#every-setting-in-its-own-tab) · [Presets](#44-presets-no-two-alike) · [Render](#render-quality-that-holds-up-close) · [Export](#export) · [Downloads](#downloads) · [Build](#quick-start) · [Release](#releasing-a-new-version) · [Changelog](CHANGELOG.md)
 
@@ -96,16 +96,14 @@ Candle flame · wildfire line · fire ring · fire tornado · burning wall · oi
 
 ## Render quality that holds up close
 
-<a href="docs/screenshot-nebula.png"><img src="docs/screenshot-nebula.png" width="100%" alt="Nebula preset"></a>
+<a href="docs/screenshot-portal.png"><img src="docs/screenshot-portal.png" width="100%" alt="Magic Portal preset"></a>
 
-<sub><i>Nebula: glowing gas swirled by a noise force and lit by a point light.</i></sub>
+<sub><i>Magic Portal: a torus emitter spun by a Vector Field node, coloured by a purple gradient.</i></sub>
 
 - **GPU ray marching** through a hardware-filtered 3D texture, at full screen resolution, with empty-space skipping.
 - **Emission + absorption** shading with self-shadowing smoke, ambient, directional and point lights, skybox and ground.
 - **Low-noise sampling** — interleaved-gradient jitter averaged over frames; pause and **HQ mode** (Ctrl+3) refines the frame over up to 256 passes for clean stills.
-- **Flames shaping**: flames are drawn where fuel actually burns, so they come out as crisp sheets with dark gaps rather than a glowing ball. Glow from the flames lights up the smoke nearby.
-- **Finishing**: Uchimura, ACES, Filmic, AgX or Reinhard tonemapping; bloom; exposure, gamma, contrast, saturation and vibrance; vignette; dithering.
-- **Ten styles**: Realistic, Pixelized, Edge, Chromatic Aberration, Kuwahara, Anisotropic Kuwahara and four stroke styles, with quantisation.
+- **The 0.4 look, guaranteed**: a test renders the default scene and compares every pixel with pictures the 0.4.0 build made. Today's build matches them exactly.
 - **Render Quality**: Low, Medium or High; Lit or Unlit; perspective or orthographic; emitter and force gizmos; an axis widget.
 
 ## Export
@@ -135,7 +133,8 @@ Candle flame · wildfire line · fire ring · fire tornado · burning wall · oi
 | Presets (44, pre-rendered pictures) | ✅ |
 | Undo / redo, clipboard, project files | ✅ |
 | Full node settings (tabs, advanced settings, gradients, histograms, force gizmos) | ✅ |
-| Tonemapping, bloom, vignette, render styles, render passes | ✅ |
+| Render passes (alpha, emission, scattering, temperature, density, fuel, depth), PNG · EXR · TGA | ✅ |
+| Settings the engine doesn't use yet (shown dimmed in the panel): tonemapping, bloom and styles, flame shaping, diffusion, masks, shredding and more | ⬜ being connected one by one |
 | Image sequence · flipbook (PNG · EXR · TGA) · `.vol` volume export, volume import | ✅ |
 | *Import control* and *Force Tightness* settings | ⬜ shown, not yet active |
 | Windows installer · macOS universal app · Linux AppImage, automatic releases | ✅ |
@@ -223,7 +222,7 @@ Releases are automatic. Bump the version and push:
 powershell -ExecutionPolicy Bypass -File scripts\bump.ps1 0.5.0
 ```
 
-(or edit `version` in `Cargo.toml` and push to `main`). First add a `## [0.5.1]` section to [CHANGELOG.md](CHANGELOG.md): it becomes the release notes. The **Release** workflow notices the new version, builds the Windows installer, the macOS universal `.dmg` and the Linux AppImage, and publishes them as release `v0.5.1` with checksums — about 15 minutes. Pushes that don't change the version are built and tested by **CI** on all three platforms but not released.
+(or edit `version` in `Cargo.toml` and push to `main`). First add a `## [0.6.0]` section to [CHANGELOG.md](CHANGELOG.md): it becomes the release notes. The **Release** workflow notices the new version, builds the Windows installer, the macOS universal `.dmg` and the Linux AppImage, and publishes them as release `v0.6.0` with checksums — about 15 minutes. Pushes that don't change the version are built and tested by **CI** on all three platforms but not released.
 
 First-time setup of the repository is a single command: `scripts\publish.ps1` (creates the private repository under the organization and pushes).
 

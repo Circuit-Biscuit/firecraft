@@ -77,6 +77,9 @@ fn blackbody(tk: f32) -> vec3f {
     return pow(c, vec3f(2.2));
 }
 
+// reference voxel size (m) for per-metre density and glow
+const H_REF: f32 = 0.0044643;
+
 fn ign(p: vec2u, f: u32) -> f32 {
     let q = vec2f(p) + 5.588238 * f32(f % 64u);
     return fract(52.9829189 * fract(dot(q, vec2f(0.06711056, 0.00583715))));
@@ -189,6 +192,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var depth = 1.0;
     let step = r.size.w;
     let ds = cell * step;
+    // density and glow add up per metre, not per voxel: the same look on any voxel size
+    // (calibrated to 0.4.0 High, 224 voxels per metre)
+    let stepm = step * cell / H_REF;
     let nshapes = r.cnt.y;
     let shape_render = r.cnt.w & 3u;     // 0 holdout, 1 visible, 2 hidden
     let shape_mask = (r.cnt.w >> 2u) & 3u; // 0 none, 1 inside, 2 outside
@@ -294,7 +300,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             if (flag(128u)) { fsig = max(s2.x, 0.0) * r.fu.w * 0.5 * m; }
             let sigma = sm + fire_sigma + fsig;
             if (sigma > 1e-5 || dot(emit, emit) > 0.0) {
-                let a = 1.0 - exp(-sigma * step);
+                let a = 1.0 - exp(-sigma * stepm);
                 // light reaching this point
                 var lg = r.ambient.xyz * mix(1.0, s2.y, r.ambient.w);
                 if (has_sun) {
@@ -325,10 +331,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                     albedo = gradient(kk);
                 }
                 let scat = (albedo * sm + r.fu.xyz * fsig) / max(sigma, 1e-5) * lg;
-                if (pass_ == 0u) { col += trans * (scat * a + emit * step * 0.5); }
-                else if (pass_ == 2u) { col += trans * emit * step * 0.5; }
+                if (pass_ == 0u) { col += trans * (scat * a + emit * stepm * 0.5); }
+                else if (pass_ == 2u) { col += trans * emit * stepm * 0.5; }
                 else if (pass_ == 3u) { col += trans * scat * a; }
-                else if (pass_ == 6u) { col += trans * vec3f(1.0 - exp(-fsig * step)); }
+                else if (pass_ == 6u) { col += trans * vec3f(1.0 - exp(-fsig * stepm)); }
                 trans *= 1.0 - a;
                 if (trans < 0.5) { depth = min(depth, (t - t0) / length(r.size.xyz)); }
             }

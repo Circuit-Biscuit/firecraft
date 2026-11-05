@@ -795,7 +795,7 @@ fn light_pass(@builtin(global_invocation_id) g: vec3u) {
             if (in_caster(p)) { acc += 50.0; break; }
             acc += s_sca0(p).y * (stepc / 1.5);
         }
-        sun_t = exp(-acc * prm.l.w);
+        sun_t = exp(-acc * prm.l.w * prm.e.x / 0.0044643); // per metre, like the ray march
     }
     // ambient occlusion: smoke above and around
     var ao = 1.0;

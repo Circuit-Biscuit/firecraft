@@ -25,6 +25,8 @@ The smooth, flowing fire from 0.4 is back. Simulation bounds are now easy to set
 
 ### Fixed
 
+- **Fine grids no longer blow out.** Glow, smoke density and shadows are now measured per metre instead of per voxel. Small voxels used to make the fire brighter and more opaque until it became a flat yellow blob. The look is calibrated to the 0.4 High grid.
+- **0.4 projects and presets behave like 0.4 again.** *Buoyancy*, *Burn rate*, *Smoke weight* and the noise *Scale* kept their names in 0.5 but changed units, and old values were read in the new units. For example, buoyancy 1.0 became 1% instead of 300%, so the fire hardly rose and the fuel didn't burn. Old values are now converted. Measured on the GPU, the 0.4 scene's heat, fuel, height and spread now track 0.4.
 - Removed the fine dotted grain in thin flames and smoke.
 
 ## [0.5.0] - 2026-11-05

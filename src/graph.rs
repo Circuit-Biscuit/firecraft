@@ -947,6 +947,15 @@ impl Node {
     pub fn passes(&self, name: &str) -> Vec<RPass> {
         match self.get(name) { Some(Val::P(v)) => v.clone(), _ => vec![] }
     }
+    /// Set a setting given in 0.4 units: the few settings that kept their name but changed
+    /// units are converted (see `UNIT_CHANGED`); everything else is a plain `set`.
+    pub fn set_old(&mut self, name: &str, val: Val) {
+        if UNIT_CHANGED.contains(&(self.kind, name)) {
+            legacy_set(self, name, &val);
+        } else {
+            self.set(name, val);
+        }
+    }
     /// Set a setting by name; names from older versions are translated (see `legacy_set`).
     pub fn set(&mut self, name: &str, val: Val) {
         if let Some(p) = self.params.iter_mut().find(|p| p.name == name) {
@@ -998,6 +1007,11 @@ const OLD_DIMS: [[f32; 3]; 4] = [[96.0, 96.0, 144.0], [160.0, 160.0, 240.0], [22
 
 /// Settings that were renamed or re-expressed in newer versions: map them onto today's settings.
 /// Returns false if the name is unknown. Used by presets and when opening older projects.
+/// Settings that kept their 0.4 name but count in new units (0.4 used plain multipliers).
+/// Values from 0.4 projects and the presets go through `legacy_set` to be converted.
+pub const UNIT_CHANGED: [(Kind, &str); 4] =
+    [(Kind::Simulation, "Buoyancy"), (Kind::Simulation, "Smoke weight"), (Kind::Simulation, "Burn rate"), (Kind::ForceNoise, "Scale")];
+
 pub fn legacy_set(n: &mut Node, name: &str, val: &Val) -> bool {
     let fv = match val { Val::F(x) => *x, Val::Ch(i) => *i as f32, _ => 0.0 };
     let put = |n: &mut Node, k: &str, v: Val| {
@@ -1475,9 +1489,12 @@ impl Graph {
         g.selected = None;
         let mut drivers: Vec<(usize, &'static str)> = vec![];
         let mut lines = text.lines();
-        if lines.next().map(|l| l.starts_with("firecraft-project")) != Some(true) {
+        let header = lines.next().unwrap_or("");
+        if !header.starts_with("firecraft-project") {
             return Err("not a FireCraft project".into());
         }
+        // 0.4 projects: version 1 without the 0.5 settings (0.5.0/0.5.1 saved version 1 too, with them)
+        let old_units = header.trim() == "firecraft-project 1" && !text.contains("\tVoxel count\t");
         for line in lines {
             let c: Vec<&str> = line.split('\t').collect();
             let num = |i: usize| c.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
@@ -1505,6 +1522,10 @@ impl Graph {
                     let raw = c.get(2).copied().unwrap_or("");
                     let nums: Vec<f32> = raw.split(' ').filter_map(|s| s.parse().ok()).collect();
                     let a3 = |d: &[f32]| [d.first().copied().unwrap_or(0.0), d.get(1).copied().unwrap_or(0.0), d.get(2).copied().unwrap_or(0.0)];
+                    if old_units && UNIT_CHANGED.contains(&(n.kind, pname)) {
+                        legacy_set(n, pname, &Val::F(nums.first().copied().unwrap_or(0.0)));
+                        continue;
+                    }
                     let Some(p) = n.params.iter_mut().find(|p| p.name == pname) else {
                         // a setting from an older version
                         let v = if nums.len() >= 3 { Val::V(a3(&nums)) } else { Val::F(nums.first().copied().unwrap_or(0.0)) };
@@ -2110,7 +2131,7 @@ impl Graph {
 
 /// Project text for a set of nodes and the wires between them.
 pub fn save_parts(nodes: &[Node], wires: &[Wire]) -> String {
-    let mut s = String::from("firecraft-project 1\n");
+    let mut s = String::from("firecraft-project 2\n");
     for n in nodes {
         s += &format!("node\t{:?}\t{}\t{}\t{}\n", n.kind, n.pos.x, n.pos.y, n.enabled as u8);
         if !n.title.is_empty() {
@@ -2321,6 +2342,22 @@ fn param_menu(ui: &mut Ui, p: &mut Param) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_units_are_converted() {
+        // a 0.4 project: Buoyancy 1.0 was "normal" (300% of gravity today), Burn rate 1.0 = 100%
+        let old = "firecraft-project 1\nnode\tSimulation\t0\t0\t1\np\tBuoyancy\t1\np\tBurn rate\t2\n";
+        let g = Graph::load(old).unwrap();
+        assert_eq!(g.nodes[0].f("Buoyancy"), 300.0);
+        assert_eq!(g.nodes[0].f("Burn rate"), 200.0);
+        // today's files keep their values
+        let g2 = Graph::load(&g.save()).unwrap();
+        assert_eq!(g2.nodes[0].f("Buoyancy"), 300.0);
+        // presets are written in 0.4 units too
+        let mut n = template(Kind::Simulation);
+        n.set_old("Smoke weight", Val::F(0.5));
+        assert_eq!(n.f("Smoke weight"), 50.0);
+    }
+
     #[test]
     fn default_graph_is_live_and_round_trips() {
         let g = Graph::default();

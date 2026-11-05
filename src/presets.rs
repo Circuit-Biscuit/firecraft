@@ -77,8 +77,9 @@ const SHADING: usize = 11;
 const CAM: usize = 12;
 const SCENE: usize = 13;
 
+/// Presets are written in 0.4 units; renamed or re-scaled settings are converted.
 fn set(g: &mut Graph, i: usize, name: &str, v: Val) {
-    g.nodes[i].set(name, v);
+    g.nodes[i].set_old(name, v);
 }
 
 /// Add a node; preset nodes are laid out in tidy rows below the default graph

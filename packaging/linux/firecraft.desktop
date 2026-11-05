@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=FireCraft
+GenericName=Fire and Smoke Simulator
+Comment=Real-time fire, smoke and explosion simulator
+Exec=firecraft %f
+Icon=firecraft
+Terminal=false
+Categories=Graphics;3DGraphics;
+MimeType=application/x-firecraft-project;
+Keywords=fire;smoke;explosion;vfx;simulation;volume;

@@ -1,0 +1,5 @@
+# Unix line endings in the repository (the macOS and Linux build machines read these files)
+* text=auto eol=lf
+*.png binary
+*.gif binary
+*.ico binary

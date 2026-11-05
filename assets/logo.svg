@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a4f58"/>
+      <stop offset="1" stop-color="#2e3238"/>
+    </linearGradient>
+    <linearGradient id="outer" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e01e2b"/>
+      <stop offset="1" stop-color="#f77f00"/>
+    </linearGradient>
+    <linearGradient id="inner" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f77f00"/>
+      <stop offset="1" stop-color="#fcbf49"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ponytail: rounded corners for preview; drop rx for stores that mask icons themselves (iOS/Android adaptive) -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <g transform="translate(46.1 28) scale(0.82)">
+    <path fill="url(#outer)" d="M256 460 C176 460 128 404 128 336 C128 268 172 232 196 184 C206 214 220 230 240 236 C232 190 250 136 296 96 C292 150 330 186 356 228 C376 260 384 292 384 336 C384 404 336 460 256 460 Z"/>
+    <path fill="url(#inner)" d="M256 440 C214 440 188 410 188 372 C188 334 214 314 230 284 C236 304 246 314 260 316 C256 290 270 262 292 244 C292 278 316 300 322 332 C326 352 324 362 324 372 C324 410 298 440 256 440 Z"/>
+    <path fill="#fff3b0" d="M256 432 C232 432 218 414 218 394 C218 370 236 360 248 340 C254 356 262 360 270 362 C278 372 294 384 294 400 C294 418 278 432 256 432 Z"/>
+  </g>
+</svg>

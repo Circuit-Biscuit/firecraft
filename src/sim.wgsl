@@ -547,19 +547,3 @@ fn pack(@builtin(global_invocation_id) g: vec3u) {
         atomicStore(&occ[b.x + nb.x * (b.y + nb.y * b.z)], 1u);
     }
 }
-
-// ---- Histograms for the Shading node (added after 0.4; reads the grid, changes nothing) ----
-@group(0) @binding(11) var<storage, read_write> hist: array<atomic<u32>>;
-
-@compute @workgroup_size(4, 4, 4)
-fn histogram(@builtin(global_invocation_id) g: vec3u) {
-    let c = vec3i(g * 2u);
-    if (any(c >= dims())) { return; }
-    let s = sca0[idx(c)];
-    if (s.x > 0.01) {
-        atomicAdd(&hist[u32(clamp((s.x * 1000.0 + 300.0) / 10000.0 * 64.0, 0.0, 63.0))], 1u);
-    }
-    if (s.y > 0.001) {
-        atomicAdd(&hist[64u + u32(clamp(s.y / 2.0 * 64.0, 0.0, 63.0))], 1u);
-    }
-}

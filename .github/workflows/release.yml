@@ -159,16 +159,9 @@ jobs:
           merge-multiple: true
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
-      - name: Release notes from CHANGELOG.md
-        run: |
-          # the "## [<version>]" section, up to the next "## [" heading
-          awk -v v="$V" '/^## \[/{ if (on) exit; on = index($0, "[" v "]") > 0; next } on' CHANGELOG.md > notes.md
-          if [ ! -s notes.md ]; then echo "CHANGELOG.md has no section for $V" >&2; exit 1; fi
-          printf '\n---\nDownloads: pick the file for your platform below. Check them with `SHA256SUMS.txt`.\n' >> notes.md
-          cat notes.md
       - name: Create release v${{ env.V }}
         run: |
           gh release create "v$V" dist/* \
             --title "FireCraft $V" \
             --target "$GITHUB_SHA" \
-            --notes-file notes.md
+            --generate-notes

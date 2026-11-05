@@ -1,9 +1,6 @@
 // Runs the fluid simulation and the raymarcher on the graphics card.
-// This is the 0.4.0 engine, unchanged in what it computes. Additions only: an explicit grid
-// size and position (Domain), a histogram pass, and reading the linear image back for EXR.
-use crate::render::Camera;
-use crate::sim::Domain;
-use crate::sim04::{AMBIENT_K, FPS, Shade, Shape, ShapeInst, SimParams, particle};
+use crate::render::{Camera, Shade};
+use crate::sim::{AMBIENT_K, FPS, Shape, ShapeInst, SimParams, dims, particle};
 use eframe::wgpu;
 
 // vel0, sca0, sca1 (also new velocity), tmp (also curl), p0, p1, divergence, shadow
@@ -43,8 +40,8 @@ fn uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-const PASSES: [&str; 18] = [
-    "histogram", "gs_red", "gs_black", "sor_red", "sor_black", "pack", "emit_forces", "curl_pass", "confine", "divergence", "jacobi_a", "jacobi_b", "project", "advect_vel", "advect_fwd", "advect_back", "correct", "shadow_pass",
+const PASSES: [&str; 17] = [
+    "gs_red", "gs_black", "sor_red", "sor_black", "pack", "emit_forces", "curl_pass", "confine", "divergence", "jacobi_a", "jacobi_b", "project", "advect_vel", "advect_fwd", "advect_back", "correct", "shadow_pass",
 ];
 
 impl Gpu {
@@ -55,7 +52,6 @@ impl Gpu {
         entries.extend((1..=BUFS as u32).map(|b| storage(b, false)));
         // packed volume for the renderer (hardware-filtered 3D texture)
         entries.push(storage(BUFS as u32 + 2, false)); // brick occupancy
-        entries.push(storage(BUFS as u32 + 3, false)); // histograms (Shading node)
         entries.push(wgpu::BindGroupLayoutEntry {
             binding: BUFS as u32 + 1,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -202,12 +198,6 @@ impl Gpu {
     }
 
     /// Blocking read of an RGBA8 target into tightly packed rows.
-    /// Linear colour of the last render (before tonemapping), RGBA floats, for EXR export.
-    pub fn read_hdr(&self, t: &Target) -> Vec<f32> {
-        let raw = self.read(&t.accum, (t.w * t.h * 16) as u64);
-        raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
-    }
-
     pub fn read_target(&self, t: &Target) -> Vec<u8> {
         let row = (t.w * 4).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * t.h) as u64, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -256,7 +246,7 @@ impl Target {
         });
         let view = tex.create_view(&Default::default());
         let srgb_view = tex.create_view(&wgpu::TextureViewDescriptor { format: Some(wgpu::TextureFormat::Rgba8UnormSrgb), usage: Some(wgpu::TextureUsages::TEXTURE_BINDING), ..Default::default() });
-        let accum = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("accum"), size: (w * h * 16) as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let accum = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("accum"), size: (w * h * 16) as u64, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
         Target { tex, view, srgb_view, accum, w, h }
     }
 }
@@ -276,8 +266,7 @@ impl U {
 }
 
 pub struct GpuSim {
-    /// Grid size, voxel size and position (from the Simulation node's Domain tab).
-    pub dom: Domain,
+    pub res: usize,
     pub n: [usize; 3],
     pub h: f32,
     pub frame: u32,
@@ -285,7 +274,6 @@ pub struct GpuSim {
     vol_view: wgpu::TextureView,
     sampler: wgpu::Sampler,
     occ: wgpu::Buffer,
-    hist: wgpu::Buffer,
     sim_uni: wgpu::Buffer,
     ren_uni: wgpu::Buffer,
     bind: wgpu::BindGroup,
@@ -301,9 +289,9 @@ const SIM_UNI: u64 = 16 * 7 + 112 * MAX_EMIT as u64 + 96 * MAX_FORCES as u64 + 3
 const LIGHT_OFFSET: u64 = 16 * 6;
 
 impl GpuSim {
-    /// A grid of `dom.n` voxels (sim axes x, up, z) of `dom.h` metres, with its min corner at `dom.origin`.
-    pub fn new(gpu: &Gpu, dom: Domain) -> Self {
-        let n = dom.n;
+/// `width` is the domain width in metres; smaller = more detail on the same grid.
+    pub fn new(gpu: &Gpu, res: usize, width: f32) -> Self {
+        let n = dims(res);
         let cells = (n[0] * n[1] * n[2]) as u64;
         let bufs: Vec<wgpu::Buffer> = (0..BUFS)
             .map(|k| {
@@ -336,35 +324,17 @@ impl GpuSim {
         });
         let bricks = (n[0].div_ceil(8) * n[1].div_ceil(8) * n[2].div_ceil(8)) as u64;
         let occ = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("occupancy"), size: bricks * 4, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let hist = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("histograms"), size: 512, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: sim_uni.as_entire_binding() }];
         entries.extend(bufs.iter().enumerate().map(|(k, b)| wgpu::BindGroupEntry { binding: k as u32 + 1, resource: b.as_entire_binding() }));
         entries.push(wgpu::BindGroupEntry { binding: BUFS as u32 + 1, resource: wgpu::BindingResource::TextureView(&vol_view) });
         entries.push(wgpu::BindGroupEntry { binding: BUFS as u32 + 2, resource: occ.as_entire_binding() });
-        entries.push(wgpu::BindGroupEntry { binding: BUFS as u32 + 3, resource: hist.as_entire_binding() });
         let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &gpu.sim_layout, entries: &entries });
-        GpuSim { dom, n, h: dom.h, frame: 0, bufs, vol_view, sampler, occ, hist, sim_uni, ren_uni, bind, sparks: vec![] }
+        GpuSim { res, n, h: width / n[0] as f32, frame: 0, bufs, vol_view, sampler, occ, sim_uni, ren_uni, bind, sparks: vec![] }
     }
 
     pub fn origin(&self) -> [f32; 3] {
-        self.dom.origin
-    }
-
-    /// Temperature (64 bins, 0..10000 K) and smoke (64 bins, 0..2) histograms of every 8th voxel.
-    pub fn histograms(&self, gpu: &Gpu) -> (Vec<f32>, Vec<f32>) {
-        let mut enc = gpu.device.create_command_encoder(&Default::default());
-        enc.clear_buffer(&self.hist, 0, None);
-        {
-            let (x, y, z) = (self.n[0].div_ceil(8) as u32, self.n[1].div_ceil(8) as u32, self.n[2].div_ceil(8) as u32);
-            let mut pass = enc.begin_compute_pass(&Default::default());
-            pass.set_bind_group(0, &self.bind, &[]);
-            pass.set_pipeline(gpu.pipe("histogram"));
-            pass.dispatch_workgroups(x, y, z);
-        }
-        gpu.queue.submit([enc.finish()]);
-        let raw = gpu.read(&self.hist, 512);
-        let v: Vec<f32> = raw.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32).collect();
-        (v[..64].to_vec(), v[64..].to_vec())
+        let [nx, ny, nz] = self.n;
+        [-(nx as f32) * self.h * 0.5, -(ny as f32) * self.h * 0.15, -(nz as f32) * self.h * 0.5]
     }
     pub fn size(&self) -> [f32; 3] {
         [self.n[0] as f32 * self.h, self.n[1] as f32 * self.h, self.n[2] as f32 * self.h]
@@ -587,7 +557,7 @@ impl GpuSim {
         let (sun_c, sun_d) = s.sun.unwrap_or(([0.0; 3], [0.0, 1.0, 0.0]));
         let mut u = U::default();
         u.u(&[self.n[0] as u32, self.n[1] as u32, self.n[2] as u32, seed])
-            .u(&[target.w as u32, target.h as u32, flags, s.pass.min(15) | ((s.alpha > 0) as u32) << 4 | (s.invert_alpha as u32) << 5 | ((s.alpha == 2) as u32) << 6])
+            .u(&[target.w as u32, target.h as u32, flags, 0])
             .f(&[eye[0], eye[1], eye[2], tanf])
             .f(&[f[0], f[1], f[2], target.w as f32 / target.h as f32])
             .f(&[r[0], r[1], r[2], cam.dist * tanf])

@@ -108,12 +108,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let t1 = min(min(max(ta.x, tb.x), max(ta.y, tb.y)), min(max(ta.z, tb.z), t_end));
     var col = vec3f(0.0);
     var trans = 1.0;
-    // render passes for export (added after 0.4; the beauty image below is untouched)
-    var ce = vec3f(0.0);
-    var cs = vec3f(0.0);
-    var kmax = 0.0;
-    var fuel_a = 0.0;
-    var depth = 1.0;
     let step = r.size.w;
     let ds = cell * step;
     if (t1 > t0) {
@@ -142,7 +136,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             let sm = max(s.y, 0.0) * r.misc.x;
             let tk = s.x * r.tk.w * 1000.0 + 300.0;
             let k = clamp((tk - r.tk.x) / max(r.tk.y - r.tk.x, 1.0), 0.0, 1.0);
-            kmax = max(kmax, k);
             // hot gas glows and absorbs a little, which gives the flame body its dark folds
             let fire_sigma = k * k * 0.08;
             let sigma = sm * r.smoke.w * 0.3 + fire_sigma;
@@ -157,19 +150,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 let scat = r.smoke.xyz * light * min(sm * r.smoke.w * 0.3 / max(sigma, 1e-5), 1.0);
                 let emit = gradient(k) * pow(k, 3.0) * r.tk.z * 6.0;
                 col += trans * (scat * a + emit * step * 0.5);
-                ce += trans * emit * step * 0.5;
-                cs += trans * scat * a;
-                fuel_a += trans * (1.0 - exp(-max(s.w, 0.0) * step));
                 trans *= 1.0 - a;
-                if (trans < 0.5 && depth >= 1.0) { depth = (t - t0) / length(r.size.xyz); }
             }
             t += ds;
         }
     }
-    let alpha = 1.0 - trans;
-    let vcol = col;
     col += bg * trans;
-    var spk = vec3f(0.0);
     // glowing particles (sparks)
     for (var k = 0u; k < r.ns.x; k++) {
         let sp = r.sp[k];
@@ -178,39 +164,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let d = ro + rd * tc - sp.xyz;
         let rr = max(sp.w, 1e-4);
         col += r.sc[k].xyz * exp(-dot(d, d) / (rr * rr)) * 3.0;
-        spk += r.sc[k].xyz * exp(-dot(d, d) / (rr * rr)) * 3.0;
     }
     // smoothing over frames / progressive refinement (weight 1 = fresh image)
     let ai = gid.y * w + gid.x;
     let hw = r.misc.y;
-    let pass_ = r.img.w & 15u;
-    let transparent = (r.img.w & 16u) != 0u;
-    if (pass_ == 0u && !transparent) {
-        // the 0.4 image, exactly
-        if (hw < 0.999) { col = mix(accum[ai].xyz, col, hw); }
-        accum[ai] = vec4f(col, 1.0);
-        let c = pow(aces(col), vec3f(1.0 / 2.2));
-        textureStore(out_img, vec2i(gid.xy), vec4f(c, 1.0));
-        return;
-    }
-    // export passes: 0 render all (transparent), 1 alpha, 2 emission, 3 scattering,
-    // 4 temperature, 5 density, 6 fuel, 7 depth
-    var v = vec4f(vcol + spk, alpha);
-    if (!transparent) { v = vec4f(col, 1.0); }
-    if (pass_ == 1u || pass_ == 5u) { v = vec4f(vec3f(alpha), 1.0); }
-    else if (pass_ == 2u) { v = vec4f(ce + spk, alpha); }
-    else if (pass_ == 3u) { v = vec4f(cs, alpha); }
-    else if (pass_ == 4u) { v = vec4f(vec3f(kmax), 1.0); }
-    else if (pass_ == 6u) { v = vec4f(vec3f(fuel_a), 1.0); }
-    else if (pass_ == 7u) { v = vec4f(vec3f(select(1.0, depth, alpha > 0.0)), 1.0); }
-    if (hw < 0.999) { v = mix(accum[ai], v, hw); }
-    accum[ai] = v;
-    var rgb = v.xyz;
-    if (pass_ <= 3u && pass_ != 1u) {
-        if ((r.img.w & 64u) != 0u && v.w > 1e-4) { rgb = rgb / v.w; } // straight alpha
-        rgb = pow(aces(rgb), vec3f(1.0 / 2.2));
-    }
-    var a = v.w;
-    if ((r.img.w & 32u) != 0u) { a = 1.0 - a; }
-    textureStore(out_img, vec2i(gid.xy), vec4f(rgb, select(1.0, a, transparent)));
+    if (hw < 0.999) { col = mix(accum[ai].xyz, col, hw); }
+    accum[ai] = vec4f(col, 1.0);
+    let c = pow(aces(col), vec3f(1.0 / 2.2));
+    textureStore(out_img, vec2i(gid.xy), vec4f(c, 1.0));
 }

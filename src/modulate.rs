@@ -92,7 +92,7 @@ pub fn apply(g: &Graph, t: f32) -> Graph {
                     }
                     Val::V(a)
                 }
-                other => other.clone(),
+                Val::C(c) => Val::C(*c),
             };
         }
     }
@@ -194,14 +194,14 @@ mod tests {
         g.nodes[osc].set("Frequency", Val::F(1.0));
         let id = g.nodes[osc].id;
         let em = g.first(Kind::Emitter).unwrap();
-        let p = g.nodes[em].params.iter_mut().find(|p| p.name == "Additional pressure rate").unwrap();
+        let p = g.nodes[em].params.iter_mut().find(|p| p.name == "Expansion").unwrap();
         p.driver = Some(id);
-        let at = |t: f32| apply(&g, t).nodes[em].f("Additional pressure rate");
+        let at = |t: f32| apply(&g, t).nodes[em].f("Expansion");
         assert!((at(0.25) - 5.0).abs() < 1e-3, "sine peak");
         assert!((at(0.75) - 1.0).abs() < 1e-3, "sine trough");
         // survives save/load
         let g2 = Graph::load(&g.save()).unwrap();
-        let d = g2.nodes[em].params.iter().find(|p| p.name == "Additional pressure rate").unwrap().driver;
+        let d = g2.nodes[em].params.iter().find(|p| p.name == "Expansion").unwrap().driver;
         assert_eq!(d, Some(g2.nodes[osc].id));
     }
 }

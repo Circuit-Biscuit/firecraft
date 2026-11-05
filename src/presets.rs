@@ -77,9 +77,8 @@ const SHADING: usize = 11;
 const CAM: usize = 12;
 const SCENE: usize = 13;
 
-/// Presets are written in 0.4 units; renamed or re-scaled settings are converted.
 fn set(g: &mut Graph, i: usize, name: &str, v: Val) {
-    g.nodes[i].set_old(name, v);
+    g.nodes[i].set(name, v);
 }
 
 /// Add a node; preset nodes are laid out in tidy rows below the default graph
@@ -835,7 +834,7 @@ pub fn apply(g: &mut Graph, i: usize) {
         _ => {}
     }
     // frame the camera to the domain
-    let domain = g.nodes[SIM].domain_width();
+    let domain = g.nodes[SIM].f("Domain size");
     let cam = &mut g.nodes[CAM];
     cam.set("Distance", F(domain * 2.6));
     cam.set("Target height", F(domain * 0.43));

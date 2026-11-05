@@ -5,29 +5,6 @@ pub const AMBIENT_K: f32 = 300.0;
 pub const FPS: f32 = 60.0;
 
 pub type V3 = [f32; 3];
-/// Rotation matrix, rows. `mat_mul(R, v)` turns a local direction into a world one.
-pub type M3 = [[f32; 3]; 3];
-pub const IDENTITY: M3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-
-pub fn mat_mul(m: &M3, v: V3) -> V3 {
-    std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2])
-}
-pub fn transpose(m: &M3) -> M3 {
-    std::array::from_fn(|i| std::array::from_fn(|j| m[j][i]))
-}
-fn mm(a: &M3, b: &M3) -> M3 {
-    std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()))
-}
-
-/// Rotation from the panel's X/Y/Z degrees (Z-up axes) expressed in sim axes (Y-up).
-pub fn rotation_ui(deg: V3) -> M3 {
-    let [x, y, z] = deg.map(|d| d.to_radians());
-    // UI X = sim x, UI Y = sim -z, UI Z = sim y
-    let rx: M3 = [[1.0, 0.0, 0.0], [0.0, x.cos(), x.sin()], [0.0, -x.sin(), x.cos()]];
-    let ry: M3 = [[y.cos(), -y.sin(), 0.0], [y.sin(), y.cos(), 0.0], [0.0, 0.0, 1.0]];
-    let rz: M3 = [[z.cos(), 0.0, z.sin()], [0.0, 1.0, 0.0], [-z.sin(), 0.0, z.cos()]];
-    mm(&rz, &mm(&ry, &rx))
-}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Shape {
@@ -35,17 +12,6 @@ pub enum Shape {
     Box,
     Cylinder,
     Torus,
-}
-
-impl Shape {
-    pub fn id(self) -> f32 {
-        match self {
-            Shape::Sphere => 0.0,
-            Shape::Box => 1.0,
-            Shape::Cylinder => 2.0,
-            Shape::Torus => 3.0,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -77,12 +43,11 @@ pub struct ShapeInst {
     pub burst: Option<Burst>,
     pub wander: f32, // m/s of random drift (Shape: Particles)
     pub seed: f32,
-    pub rot: M3,
 }
 
 impl ShapeInst {
     pub fn sphere(center: V3, r: f32) -> Self {
-        ShapeInst { kind: Shape::Sphere, center, half: [r; 3], torus: 0.3, hollow: 0.0, gradient: None, noise: None, burst: None, wander: 0.0, seed: 0.0, rot: IDENTITY }
+        ShapeInst { kind: Shape::Sphere, center, half: [r; 3], torus: 0.3, hollow: 0.0, gradient: None, noise: None, burst: None, wander: 0.0, seed: 0.0 }
     }
 }
 
@@ -118,9 +83,6 @@ pub struct Emitter {
     pub burst: f32, // seconds of emission per cycle (0 = continuous)
     pub gap: f32,   // seconds between bursts
     pub chaos: Option<Chaos>,
-    /// Pressure noise: intensity (0..1), feature size (m), seed, speed.
-    pub pressure_noise: [f32; 4],
-    pub shadow_caster: bool,
 }
 
 /// Force nodes. `kind`: 0 line, 1 point, 2 toroidal, 3 noise, 4 vector field, 5 vorticles.
@@ -136,87 +98,36 @@ pub struct Force {
     pub extra: f32,
     pub mask: Option<ShapeInst>,
     pub softness: f32,
-    /// Field masks: constant, velocity, temperature, smoke (0..1).
-    pub masks: [f32; 4],
-    /// Temperature range (K) and smoke range (fraction) for the masks.
-    pub ranges: [f32; 4],
-    /// Noise: octaves, lacunarity, gain, curl (1/0).
-    pub noise: [f32; 4],
-    pub bias: V3,
-    pub seed: f32,
-    /// 0 volume, 1 particles, 2 both
-    pub mode: u32,
-    pub rot: M3,
 }
 
 #[derive(Clone)]
 pub struct SimParams {
-    /// Simulated time per frame, relative to the 60 Hz default (60 / Timestep).
     pub time_scale: f32,
-    pub substeps: usize,
-    pub freeze: bool,
-    /// 0 combustion, 1 smoke only, 2 fire only
-    pub mode: u32,
-    pub vel_cubic: bool,
-    pub vox_cubic: bool,
-    /// 0 first, 1 second, 2 third order
-    pub order: u32,
-    pub adv_offset: V3, // m/s, sim axes
-    pub hourglass: f32,
-    pub reuse_pressure: bool,
-    pub leak_guard: bool,
-    pub collider_removal: f32,
-    pub iterations: usize,
-    pub sor_share: f32,
-    pub omega: f32,
-    // combustion (fractions, 1 = the old defaults)
-    pub burn_rate: f32,
-    pub ignition_k: f32,
-    pub ignition_soft_k: f32,
-    pub max_burn_k: f32,
-    pub heat: f32,
-    pub smoke_yield: f32,
-    pub flames_yield: f32,
-    pub expansion: f32,
-    /// Dissipation per frame: temperature, velocity, smoke, flames, fuel (multiplicative)
-    pub diss: [f32; 5],
-    /// Subtractive dissipation per frame: smoke, flames, fuel
-    pub sub: [f32; 3],
-    /// Diffusion blend per frame: temperature, smoke, fuel, flames, velocity
-    pub diffusion: [f32; 5],
-    pub vorticity: f32,
-    pub vorticity_large: f32,
-    /// Vorticity masks: velocity, temperature, smoke, constant
-    pub vort_masks: [f32; 4],
-    /// temperature min/max (K), smoke min/max (fraction)
-    pub vort_ranges: [f32; 4],
-    pub vort_ramp: f32,
-    pub tightness: f32,
     pub buoyancy: f32,
     pub smoke_weight: f32,
-    pub fuel_weight: f32,
-    /// Solid sides: bit 1 ground, 2 ceiling, 4 -x, 8 +x, 16 -z, 32 +z (sim axes)
-    pub walls: u32,
-    /// Wind direction (sim axes, unnormalised), direction randomisation, speed m/s, chaos m/s
-    pub wind_dir: V3,
-    pub wind_rand: V3,
-    pub wind_speed: f32,
-    pub wind_chaos: f32,
-    /// Shredding: intensity, threshold K, width K
-    pub shred: [f32; 3],
-    /// Domain mask: shape (0 none, 1 sphere, 2 box), intensity, distance
-    pub mask: [f32; 3],
+    pub vorticity: f32,
+    pub burn_rate: f32,
+    pub ignition_k: f32,
+    pub heat: f32,
+    pub smoke_yield: f32,
+    pub cooling: f32,
+    pub smoke_fade: f32,
+    pub wind: [f32; 2],
+    pub iterations: usize,
+    pub substeps: usize,
     pub forces: Vec<Force>,
     pub colliders: Vec<ShapeInst>,
     pub emitters: Vec<Emitter>,
 }
 
-/// Grid size, cell size (m) and domain origin (m, sim axes) from the Simulation node.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Domain {
-    pub n: [usize; 3],
-    pub h: f32,
-    pub origin: V3,
+/// Grid size for Low / Medium / High / Ultra (1.5 times taller than wide).
+pub fn dims(res: usize) -> [usize; 3] {
+    match res {
+        0 => [96, 144, 96],
+        2 => [224, 336, 224],
+        3 => [288, 432, 288],
+        _ => [160, 240, 160],
+    }
 }
 
 fn hash(a: f32, b: f32) -> f32 {
@@ -231,6 +142,7 @@ pub fn particle(p: &Particles, origin: V3, k: usize, t: f32) -> (V3, V3, f32) {
     let age = (t + phase) % life;
     let birth = ((t + phase) / life).floor();
     let r = |i: f32| hash(p.seed + k as f32 * 13.7 + i, birth);
+    // direction within a cone around `dir`
     let d = {
         let l = (p.dir[0] * p.dir[0] + p.dir[1] * p.dir[1] + p.dir[2] * p.dir[2]).sqrt().max(1e-4);
         [p.dir[0] / l, p.dir[1] / l, p.dir[2] / l]
@@ -263,12 +175,5 @@ mod tests {
         let (b, vb, lb) = particle(&p, [0.0; 3], 0, 0.5);
         assert!(lb > la && b[1] != a[1]);
         assert!(vb[1] < 2.0, "gravity slows the climb");
-    }
-    #[test]
-    fn rotations_are_orthonormal() {
-        let r = rotation_ui([30.0, -45.0, 60.0]);
-        let v = mat_mul(&r, [0.3, -0.4, 0.5]);
-        let back = mat_mul(&transpose(&r), v);
-        assert!((back[0] - 0.3).abs() < 1e-5 && (back[1] + 0.4).abs() < 1e-5 && (back[2] - 0.5).abs() < 1e-5);
     }
 }

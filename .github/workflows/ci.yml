@@ -24,5 +24,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
-      # build machines have no GPU, so the GPU render test is skipped here
-      - run: cargo test --locked -- --skip default_scene
+      # build machines have no GPU, so the GPU render tests are skipped here (run them locally)
+      - run: cargo test --locked -- --skip default_scene --skip gpu_

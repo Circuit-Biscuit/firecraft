@@ -126,8 +126,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
-      - name: Tests (no GPU on build machines, so the GPU render test is skipped)
-        run: cargo test --release --locked -- --skip default_scene
+      - name: Tests (no GPU on build machines, so the GPU render tests are skipped)
+        run: cargo test --release --locked -- --skip default_scene --skip gpu_
       - name: AppImage and tarball
         run: |
           mkdir -p dist AppDir/usr/bin AppDir/usr/share/icons/hicolor/256x256/apps AppDir/usr/share/applications

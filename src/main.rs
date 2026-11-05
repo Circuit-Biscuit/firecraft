@@ -2395,7 +2395,7 @@ mod tests {
 
     /// Every new setting group does something when changed (and the shaders run with it on).
     #[test]
-    fn new_settings_change_the_picture() {
+    fn gpu_new_settings_change_the_picture() {
         let gpu = gpu::test_gpu();
         let shot = |g: &Graph| {
             let b = build(g, true, false, 0.5);
@@ -2455,7 +2455,7 @@ mod tests {
     /// defaults changed since), and 0.4 project files, are compared pixel by pixel with pictures the
     /// 0.4.0 build made (tests_ref/).
     #[test]
-    fn renders_exactly_like_0_4() {
+    fn gpu_renders_like_0_4() {
         let gpu = gpu::test_gpu();
         // 0.4's own values for the settings whose defaults changed since
         let as_04 = |mut g: Graph| {
